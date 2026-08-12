@@ -13,6 +13,7 @@
 #pragma once
 
 #include "cg/analysis/analysis.hpp"
+#include "cg/cost/hardware_model.hpp"
 #include "cg/ir/module.hpp"
 
 #include <unordered_map>
@@ -61,6 +62,13 @@ public:
         total_bytes_ = 0;
     }
 
+    void set_hardware(HardwareModel hw) {
+        hw_ = std::move(hw);
+        compute();
+    }
+
+    const HardwareModel& hardware() const { return hw_; }
+
 private:
     void compute();
     BoundClass classify(u64 flops, u64 bytes, usize parallelism_estimate);
@@ -71,6 +79,7 @@ private:
     double module_intensity_ = 0.0;
     u64 total_flops_ = 0;
     u64 total_bytes_ = 0;
+    HardwareModel hw_; // defaults to generic CPU
 };
 
 } // namespace cg

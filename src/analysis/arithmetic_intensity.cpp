@@ -1,8 +1,8 @@
 // analysis/arithmetic_intensity.cpp
 //
-// Rewritten to compute FLOPs/bytes for ALL ops, not just matmul/reduction/
-// elementwise. Every op now has a real FLOP count and byte count based on
-// its semantics.
+// Uses dynamic roofline ridge from HardwareModel instead of hardcoded 1.0/16.0.
+// The ridge = peak_flops / peak_bw. For H100 F16 TC: ~295 FLOPs/byte.
+// For CPU F32: ~5 FLOPs/byte.
 #include "cg/analysis/arithmetic_intensity.hpp"
 #include "cg/ir/ops.hpp"
 
@@ -14,9 +14,20 @@ BoundClass ArithmeticIntensityAnalysis::classify(u64 flops, u64 bytes,
     if (flops == 0) return BoundClass::MemoryBound;
     if (bytes == 0) return BoundClass::ComputeBound;
     double intensity = static_cast<double>(flops) / static_cast<double>(bytes);
+
+    // Dynamic roofline ridge from hardware model.
+    // ridge = peak_flops / peak_memory_bw
+    // For A100 F32: 19.5e12 / 2.0e12 = 9.75 FLOPs/byte
+    // For H100 F16 TC: 989e12 / 3.35e12 ≈ 295 FLOPs/byte
+    // For CPU F32: 256e9 / 50e9 = 5.12 FLOPs/byte
+    double ridge = hw_.roofline_ridge(DType::F32, false);
+
     if (parallelism <= 1 && flops < 1024) return BoundClass::LatencyBound;
-    if (intensity < 1.0)   return BoundClass::MemoryBound;
-    if (intensity > 16.0)  return BoundClass::ComputeBound;
+    // Memory-bound: intensity < ridge/4
+    // Compute-bound: intensity > ridge*4
+    // Balanced: in between
+    if (intensity < ridge / 4.0) return BoundClass::MemoryBound;
+    if (intensity > ridge * 4.0) return BoundClass::ComputeBound;
     if (flops < 4096 && bytes < 4096) return BoundClass::LaunchBound;
     return BoundClass::Balanced;
 }
