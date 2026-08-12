@@ -2,87 +2,90 @@
   {
     "name": "elementwise_add",
     "size": "(64, 64)",
-    "numpy_ms": 0.000985000042419415,
-    "torch_ms": 0.0015929999790387228,
-    "torch_compile_ms": 0.021466999896802008,
+    "numpy_ms": 0.0014690003808937036,
+    "torch_ms": 0.0015799996617715806,
+    "torch_compile_ms": 0.019965000319643877,
     "cantors_gift_ms": null,
-    "cantors_gift_x86_ms": 0.004860999979428016
+    "cantors_gift_x86_ms": 0.00528900000063004
   },
   {
     "name": "elementwise_add",
     "size": "(256, 256)",
-    "numpy_ms": 0.014293999811343383,
-    "torch_ms": 0.006575000043085311,
-    "torch_compile_ms": 0.03177700000378536,
+    "numpy_ms": 0.01437900027667638,
+    "torch_ms": 0.006447000487241894,
+    "torch_compile_ms": 0.030899999728717376,
     "cantors_gift_ms": null,
-    "cantors_gift_x86_ms": 0.01995900038309628
+    "cantors_gift_x86_ms": 0.015071000234456733
   },
   {
     "name": "elementwise_add",
     "size": "(1024, 1024)",
-    "numpy_ms": 0.5303220004861942,
-    "torch_ms": 0.3643339996415307,
-    "torch_compile_ms": 0.4886599999736063,
+    "numpy_ms": 0.5723290005335002,
+    "torch_ms": 0.2875950003726757,
+    "torch_compile_ms": 0.40244499996333616,
     "cantors_gift_ms": null,
-    "cantors_gift_x86_ms": 1.6266350003206753
+    "cantors_gift_x86_ms": 0.5196680003791698
   },
   {
     "name": "fused_relu_mul",
     "size": "(64, 64)",
-    "numpy_ms": 0.0032449997888761573,
-    "torch_ms": 0.002706000486796256,
-    "torch_compile_ms": 0.020482000763877295,
-    "cantors_gift_x86_ms": 0.0051830002121278085
+    "numpy_ms": 0.003256000127294101,
+    "torch_ms": 0.0026950001483783126,
+    "torch_compile_ms": 0.020507000044744927,
+    "cantors_gift_x86_ms": 0.005312000212143175
   },
   {
     "name": "fused_relu_mul",
     "size": "(256, 256)",
-    "numpy_ms": 0.03208899943274446,
-    "torch_ms": 0.012911999874631874,
-    "torch_compile_ms": 0.034855000194511376,
-    "cantors_gift_x86_ms": 0.022184000044944696
+    "numpy_ms": 0.03213099989807233,
+    "torch_ms": 0.01207999957841821,
+    "torch_compile_ms": 0.030167999284458347,
+    "cantors_gift_x86_ms": 0.0152749998960644
   },
   {
     "name": "fused_relu_mul",
     "size": "(1024, 1024)",
-    "numpy_ms": 0.9234039998773369,
-    "torch_ms": 0.6354750003083609,
-    "torch_compile_ms": 0.49071299963543424,
-    "cantors_gift_x86_ms": 1.813869000216073
+    "numpy_ms": 0.8285019994218601,
+    "torch_ms": 0.47020700003486127,
+    "torch_compile_ms": 0.3765089995795279,
+    "cantors_gift_x86_ms": 0.4835130002902588
+  },
+  {
+    "name": "matmul",
+    "size": "(32, 32, 32)",
+    "numpy_ms": 0.013578000107372645,
+    "torch_ms": 0.0019330000213813037,
+    "torch_compile_ms": 0.02095300078508444,
+    "cantors_gift_x86_ms": 0.04978700053470675
   },
   {
     "name": "matmul",
     "size": "(64, 64, 64)",
-    "numpy_ms": 0.12831799995183246,
-    "torch_ms": 0.011365999853296671,
-    "torch_compile_ms": 0.027661999411066063
+    "numpy_ms": 0.12833800064981915,
+    "torch_ms": 0.00812700000096811,
+    "torch_compile_ms": 0.03266200019425014,
+    "cantors_gift_x86_ms": 0.34665699968172703
   },
   {
     "name": "matmul",
     "size": "(128, 128, 128)",
-    "numpy_ms": 0.8585010000388138,
-    "torch_ms": 0.02287600000272505,
-    "torch_compile_ms": 0.05502899966813857
-  },
-  {
-    "name": "matmul",
-    "size": "(256, 256, 256)",
-    "numpy_ms": 6.209011999999348,
-    "torch_ms": 0.1060759996107663,
-    "torch_compile_ms": 0.1439199995729723
+    "numpy_ms": 0.8611910006948165,
+    "torch_ms": 0.02104199938912643,
+    "torch_compile_ms": 0.046584000301663764,
+    "cantors_gift_x86_ms": 2.6419409996378818
   },
   {
     "name": "reduction_sum",
     "size": "(256, 256)",
-    "numpy_ms": 0.014020999515196308,
-    "torch_ms": 0.0071439999373978935,
-    "torch_compile_ms": 0.020232000679243356
+    "numpy_ms": 0.014209999790182337,
+    "torch_ms": 0.00626499968348071,
+    "torch_compile_ms": 0.019940000129281543
   },
   {
     "name": "reduction_sum",
     "size": "(1024, 1024)",
-    "numpy_ms": 0.25812600051722256,
-    "torch_ms": 0.07268900026247138,
-    "torch_compile_ms": 0.13109799965604907
+    "numpy_ms": 0.25240600007236935,
+    "torch_ms": 0.06961199960642261,
+    "torch_compile_ms": 0.17281000054936158
   }
 ]

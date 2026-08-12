@@ -12,9 +12,11 @@
 #include "cg/optimization/cse/cse.hpp"
 #include "cg/optimization/egraph/egraph_superoptimizer.hpp"
 #include "cg/optimization/fusion/fusion.hpp"
+#include "cg/optimization/graph/graph_pattern.hpp"
 #include "cg/optimization/layout/layout_opt.hpp"
 #include "cg/optimization/memory/copy_elimination.hpp"
 #include "cg/optimization/memory/memory_planning.hpp"
+#include "cg/optimization/recomputation/recomputation.hpp"
 #include "cg/optimization/reduction/reduction_opt.hpp"
 #include "cg/optimization/shape/shape_opt.hpp"
 #include "cg/optimization/specialization/specialization.hpp"
@@ -69,7 +71,14 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 4: fusion.
+        // Phase 4: graph pattern matching (before fusion so fusion sees patterns).
+        {
+            PassManager pm;
+            pm.add(std::make_unique<GraphPatternMatchingPass>());
+            pm.run(m, am_);
+        }
+
+        // Phase 5: fusion.
         {
             PassManager pm;
             pm.add(std::make_unique<FusionPass>());
@@ -77,14 +86,21 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 5: reduction optimization.
+        // Phase 6: reduction optimization.
         {
             PassManager pm;
             pm.add(std::make_unique<ReductionOptimizationPass>());
             pm.run(m, am_);
         }
 
-        // Phase 6: copy elimination + memory planning.
+        // Phase 7: recomputation (before memory planning).
+        {
+            PassManager pm;
+            pm.add(std::make_unique<RecomputationPass>());
+            pm.run(m, am_);
+        }
+
+        // Phase 8: copy elimination + memory planning.
         {
             PassManager pm;
             pm.add(std::make_unique<CopyEliminationPass>());
@@ -92,7 +108,7 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 7: specialization.
+        // Phase 9: specialization.
         {
             PassManager pm;
             pm.add(std::make_unique<SpecializationPass>());

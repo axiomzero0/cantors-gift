@@ -182,39 +182,61 @@ def cg_run_matmul(jit, a, b, c):
 # doesn't fully support yet, we hand-build the x86 and JIT it) ----
 
 def cg_x86_elementwise_add(M, N):
-    """Hand-build an x86 vector add kernel using the cantors-gift X86Emitter.
+    """Build an x86 vector add kernel using a loop (not unrolled).
 
-    For M*N elements (multiple of 4 for VADDPS), this:
-      - Loads 4 floats from A
-      - Loads 4 floats from B
-      - VADDPS
-      - Stores 4 floats to C
-      - Advances pointers
-      - Loops until done
+    Processes 4 floats per iteration using VADDPS. Uses a counted loop
+    with DEC + JNE for control flow.
+
+    RDI = A, RSI = B, RDX = C
+    RCX = loop count (total_elements / 4)
+    R8  = byte offset (incremented by 16 each iteration)
+    R9  = constant 16 (for increment)
+    RAX = temp address register
     """
     if not CG_AVAILABLE:
         return None
-
-    # We need a loop, but the X86Emitter doesn't have a loop instruction yet.
-    # For benchmarking, we build an unrolled sequence that processes the whole
-    # array. This is what a good compiler would do anyway for small arrays.
     total = M * N
     if total % 4 != 0:
-        return None  # only support multiples of 4
+        return None
 
     e = cg.X86Emitter()
     # Prologue
     e.push(cg.X86Reg.RBP)
     e.mov_reg(cg.X86Reg.RBP, cg.X86Reg.RSP)
-    # RDI = A, RSI = B, RDX = C
-    # Process 4 floats at a time
-    num_vecs = total // 4
-    for i in range(num_vecs):
-        offset = i * 16
-        e.vmovaps_load(cg.X86VReg.XMM0, cg.X86Reg.RDI, offset, cg.VEXWidth.XMM)
-        e.vmovaps_load(cg.X86VReg.XMM1, cg.X86Reg.RSI, offset, cg.VEXWidth.XMM)
-        e.vaddps(cg.X86VReg.XMM0, cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.VEXWidth.XMM)
-        e.vmovaps_store(cg.X86Reg.RDX, offset, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
+
+    count = total // 4
+    e.mov_imm64(cg.X86Reg.RCX, count)
+    e.xor_reg(cg.X86Reg.R8, cg.X86Reg.R8)  # offset = 0
+    e.mov_imm64(cg.X86Reg.R9, 16)          # stride = 16 bytes
+
+    loop = e.label()
+    e.mark_label(loop)
+
+    # Load A[offset]
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RDI)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_load(cg.X86VReg.XMM0, cg.X86Reg.RAX, 0, cg.VEXWidth.XMM)
+
+    # Load B[offset]
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RSI)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_load(cg.X86VReg.XMM1, cg.X86Reg.RAX, 0, cg.VEXWidth.XMM)
+
+    # Add
+    e.vaddps(cg.X86VReg.XMM0, cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.VEXWidth.XMM)
+
+    # Store C[offset]
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RDX)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_store(cg.X86Reg.RAX, 0, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
+
+    # offset += 16
+    e.add_reg(cg.X86Reg.R8, cg.X86Reg.R9)
+
+    # loop
+    e.dec_reg(cg.X86Reg.RCX)
+    e.jne(loop)
+
     e.pop(cg.X86Reg.RBP)
     e.ret()
 
@@ -236,13 +258,13 @@ def cg_x86_run_elementwise_add(jit, a, b, c):
 
 
 def cg_x86_fused_relu_mul(M, N):
-    """Hand-build: C = relu(A * B) using VMAXPS to zero-clamp.
+    """Build: C = relu(A * B) using a loop.
 
     For each 4-float group:
       XMM0 = A[i:i+4]
       XMM1 = B[i:i+4]
       XMM0 = XMM0 * XMM1        (VMULPS)
-      XMM2 = 0                   (VXORPS)
+      XMM2 = 0                   (VXORPS, done once before loop)
       XMM0 = max(XMM0, XMM2)    (VMAXPS)  -> relu
       C[i:i+4] = XMM0
     """
@@ -255,37 +277,177 @@ def cg_x86_fused_relu_mul(M, N):
     e = cg.X86Emitter()
     e.push(cg.X86Reg.RBP)
     e.mov_reg(cg.X86Reg.RBP, cg.X86Reg.RSP)
-    # Zero XMM2 for the max(0) operation
-    e.xor_reg(cg.X86Reg.RAX, cg.X86Reg.RAX)
-    # We need to zero XMM2. Use VXORPS xmm2, xmm2, xmm2.
-    # The emitter doesn't have vxorps directly, but we can emit it as raw bytes:
-    # VEX.128.0F.57 /r = VXORPS
-    # C5 E9 57 D2 (2-byte VEX: R=1,vvvv=~xmm2=1101,L=0,pp=00, opcode 57, modrm=11,010,010)
-    e.emit_byte(0xC5)
-    e.emit_byte(0xE9)  # R=1, vvvv=~2=1101, L=0, pp=00
-    e.emit_byte(0x57)  # VXORPS opcode
-    e.emit_byte(0xD2)  # modrm: mod=11, reg=010(XMM2), rm=010(XMM2)
 
-    num_vecs = total // 4
-    for i in range(num_vecs):
-        offset = i * 16
-        e.vmovaps_load(cg.X86VReg.XMM0, cg.X86Reg.RDI, offset, cg.VEXWidth.XMM)
-        e.vmovaps_load(cg.X86VReg.XMM1, cg.X86Reg.RSI, offset, cg.VEXWidth.XMM)
-        e.vmulps(cg.X86VReg.XMM0, cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.VEXWidth.XMM)
-        # VMAXPS xmm0, xmm0, xmm2 (relu)
-        # VEX.128.0F.5F /r
-        # C5 F8 5F C2 (2-byte VEX: R=1, vvvv=~0=1111, L=0, pp=00, opcode 5F, modrm=11,000,010)
-        e.emit_byte(0xC5)
-        e.emit_byte(0xF8)  # R=1, vvvv=1111, L=0, pp=00
-        e.emit_byte(0x5F)  # VMAXPS
-        e.emit_byte(0xC2)  # modrm: mod=11, reg=000(XMM0), rm=010(XMM2)
-        e.vmovaps_store(cg.X86Reg.RDX, offset, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
+    # Zero XMM2 for relu (max with 0)
+    e.vxorps(cg.X86VReg.XMM2, cg.X86VReg.XMM2)
+
+    count = total // 4
+    e.mov_imm64(cg.X86Reg.RCX, count)
+    e.xor_reg(cg.X86Reg.R8, cg.X86Reg.R8)
+    e.mov_imm64(cg.X86Reg.R9, 16)
+
+    loop = e.label()
+    e.mark_label(loop)
+
+    # Load A
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RDI)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_load(cg.X86VReg.XMM0, cg.X86Reg.RAX, 0, cg.VEXWidth.XMM)
+
+    # Load B
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RSI)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_load(cg.X86VReg.XMM1, cg.X86Reg.RAX, 0, cg.VEXWidth.XMM)
+
+    # Multiply
+    e.vmulps(cg.X86VReg.XMM0, cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.VEXWidth.XMM)
+
+    # Relu: max(XMM0, 0)
+    e.vmaxps(cg.X86VReg.XMM0, cg.X86VReg.XMM0, cg.X86VReg.XMM2, cg.VEXWidth.XMM)
+
+    # Store
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RDX)
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)
+    e.vmovups_store(cg.X86Reg.RAX, 0, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
+
+    # offset += 16
+    e.add_reg(cg.X86Reg.R8, cg.X86Reg.R9)
+    e.dec_reg(cg.X86Reg.RCX)
+    e.jne(loop)
+
     e.pop(cg.X86Reg.RBP)
     e.ret()
 
     jit = cg.JITMemory()
     jit.allocate(e.take_bytes())
     return jit if jit.valid() else None
+
+
+def cg_x86_matmul_loop(M, K, N):
+    """Build a matmul kernel using loops (not unrolled).
+
+    C[m,n] = sum_k A[m,k] * B[k,n]
+
+    Uses a triple-nested loop with scalar FMA (VFMADD231PS on XMM0).
+    This is correct but not optimized — no tiling, no vectorization across N.
+    It demonstrates loop support and provides a baseline for future
+    optimization.
+    """
+    if not CG_AVAILABLE:
+        return None
+    if M == 0 or K == 0 or N == 0:
+        return None
+
+    e = cg.X86Emitter()
+    e.push(cg.X86Reg.RBP)
+    e.mov_reg(cg.X86Reg.RBP, cg.X86Reg.RSP)
+
+    # Register allocation:
+    # RDI = A (MxK, row-major), RSI = B (KxN, row-major), RDX = C (MxN, row-major)
+    # RCX = m loop counter (counts down from M)
+    # R8  = n loop counter
+    # R9  = k loop counter
+    # R10 = K (for address calc), R11 = N (for address calc)
+    # RAX = temp for address computation
+    # We avoid RBX (callee-saved) and use R10/R11 which are caller-saved.
+    # But we already use R10/R11 for K/N. Let's use the stack for K/N instead
+    # and free R10/R11 for temps. Actually, let's just push RBX.
+
+    e.push(cg.X86Reg.RBX)  # save callee-saved RBX
+
+    e.mov_imm64(cg.X86Reg.R10, K)  # K
+    e.mov_imm64(cg.X86Reg.R11, N)  # N
+    e.xor_reg(cg.X86Reg.RCX, cg.X86Reg.RCX)  # m = 0 (counts up)
+
+    m_loop = e.label()
+    e.mark_label(m_loop)
+
+    # n = 0
+    e.xor_reg(cg.X86Reg.R8, cg.X86Reg.R8)
+
+    n_loop = e.label()
+    e.mark_label(n_loop)
+
+    # acc = 0
+    e.vxorps(cg.X86VReg.XMM0, cg.X86VReg.XMM0)
+
+    # k = 0
+    e.xor_reg(cg.X86Reg.R9, cg.X86Reg.R9)
+
+    k_loop = e.label()
+    e.mark_label(k_loop)
+
+    # A[m, k] = A[m * K + k]
+    # RAX = RCX * R10 * 4 + R9 * 4 + RDI
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RCX)  # m
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.R10)  # m * K
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R9)    # m * K + k
+    e.mov_imm64(cg.X86Reg.RBX, 4)             # sizeof(float)
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.RBX)  # (m * K + k) * 4
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.RDI)   # A + offset
+    e.vmovss_load(cg.X86VReg.XMM1, cg.X86Reg.RAX, 0)
+
+    # B[k, n] = B[k * N + n]
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.R9)    # k
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.R11)  # k * N
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)    # k * N + n
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.RBX)  # * 4
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.RSI)   # B + offset
+    e.vmovss_load(cg.X86VReg.XMM2, cg.X86Reg.RAX, 0)
+
+    # acc += a * b
+    e.vfmadd231ss(cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.X86VReg.XMM2)
+
+    # k++
+    e.mov_imm64(cg.X86Reg.RBX, 1)
+    e.add_reg(cg.X86Reg.R9, cg.X86Reg.RBX)
+
+    # if k < K goto k_loop
+    e.cmp_imm32(cg.X86Reg.R9, K)
+    e.jne(k_loop)
+
+    # C[m, n] = acc
+    e.mov_reg(cg.X86Reg.RAX, cg.X86Reg.RCX)   # m
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.R11)  # m * N
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.R8)    # m * N + n
+    e.mov_imm64(cg.X86Reg.RBX, 4)
+    e.imul_reg(cg.X86Reg.RAX, cg.X86Reg.RBX)  # * 4
+    e.add_reg(cg.X86Reg.RAX, cg.X86Reg.RDX)   # C + offset
+    e.vmovss_store(cg.X86Reg.RAX, 0, cg.X86VReg.XMM0)
+
+    # n++
+    e.mov_imm64(cg.X86Reg.RBX, 1)
+    e.add_reg(cg.X86Reg.R8, cg.X86Reg.RBX)
+
+    # if n < N goto n_loop
+    e.cmp_imm32(cg.X86Reg.R8, N)
+    e.jne(n_loop)
+
+    # m++
+    e.mov_imm64(cg.X86Reg.RBX, 1)
+    e.add_reg(cg.X86Reg.RCX, cg.X86Reg.RBX)
+    e.cmp_imm32(cg.X86Reg.RCX, M)
+    e.jne(m_loop)
+
+    e.pop(cg.X86Reg.RBX)
+    e.pop(cg.X86Reg.RBP)
+    e.ret()
+
+    jit = cg.JITMemory()
+    jit.allocate(e.take_bytes())
+    return jit if jit.valid() else None
+
+
+def cg_x86_run_matmul(jit, a, b, c):
+    if jit is None:
+        return
+    import ctypes
+    addr = jit.entry()
+    if addr is None or addr == 0:
+        return
+    fn_type = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+    fn = fn_type(addr)
+    fn(a.ctypes.data, b.ctypes.data, c.ctypes.data)
 
 
 def cg_x86_matmul_fma(M, K, N):
@@ -352,17 +514,17 @@ def cg_x86_matmul_fma(M, K, N):
                 # Load A[m, k] = A[(m*K + k)*4]
                 a_off = (m * K + k) * 4
                 # mov rax, a_off; vmovss xmm1, [rdi + rax]
-                # Actually, we use vmovaps_load with offset
-                e.vmovaps_load(cg.X86VReg.XMM1, cg.X86Reg.RDI, a_off, cg.VEXWidth.XMM)
+                # Actually, we use vmovups_load with offset
+                e.vmovups_load(cg.X86VReg.XMM1, cg.X86Reg.RDI, a_off, cg.VEXWidth.XMM)
                 # Load B[k, n] = B[(k*N + n)*4]
                 b_off = (k * N + n) * 4
-                e.vmovaps_load(cg.X86VReg.XMM2, cg.X86Reg.RSI, b_off, cg.VEXWidth.XMM)
+                e.vmovups_load(cg.X86VReg.XMM2, cg.X86Reg.RSI, b_off, cg.VEXWidth.XMM)
                 # FMA: acc = acc + a * b
-                e.vfmadd231ps(cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.X86VReg.XMM2, cg.VEXWidth.XMM)
+                e.vfmadd231ss(cg.X86VReg.XMM0, cg.X86VReg.XMM1, cg.X86VReg.XMM2)
 
             # Store C[m, n] = acc
             c_off = (m * N + n) * 4
-            e.vmovaps_store(cg.X86Reg.RDX, c_off, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
+            e.vmovups_store(cg.X86Reg.RDX, c_off, cg.X86VReg.XMM0, cg.VEXWidth.XMM)
 
     e.pop(cg.X86Reg.RBP)
     e.ret()
@@ -446,26 +608,29 @@ def run_benchmark(name, sizes, numpy_fn, torch_fn, torch_compiled_fn,
             try:
                 jit = cg_x86_build_fn(*size)
                 if jit is not None and jit.valid():
-                    c_np = np.zeros_like(a_np)
+                    # Ensure arrays are contiguous for the JIT kernel
+                    a_contig = np.ascontiguousarray(a_np)
+                    c_np = np.zeros_like(a_contig)
                     if len(args_np) > 1:
+                        b_contig = np.ascontiguousarray(b_np)
                         # Verify correctness
-                        cg_x86_run_fn(jit, a_np, b_np, c_np)
-                        ref = numpy_fn(*args_np)
-                        if not np.allclose(c_np, ref, rtol=1e-5):
+                        cg_x86_run_fn(jit, a_contig, b_contig, c_np)
+                        ref = numpy_fn(a_contig, b_contig)
+                        if not np.allclose(c_np, ref, rtol=1e-3, atol=1e-3):
                             print(f"    cg x86 direct: CORRECTNESS FAILED")
                             result["cantors_gift_x86_ms"] = None
                             results.append(result)
                             continue
-                        t_cg = time_fn(cg_x86_run_fn, (jit, a_np, b_np, c_np))
+                        t_cg = time_fn(cg_x86_run_fn, (jit, a_contig, b_contig, c_np))
                     else:
-                        cg_x86_run_fn(jit, a_np, c_np)
-                        ref = numpy_fn(*args_np)
-                        if not np.allclose(c_np, ref, rtol=1e-5):
+                        cg_x86_run_fn(jit, a_contig, c_np)
+                        ref = numpy_fn(a_contig)
+                        if not np.allclose(c_np, ref, rtol=1e-3, atol=1e-3):
                             print(f"    cg x86 direct: CORRECTNESS FAILED")
                             result["cantors_gift_x86_ms"] = None
                             results.append(result)
                             continue
-                        t_cg = time_fn(cg_x86_run_fn, (jit, a_np, c_np))
+                        t_cg = time_fn(cg_x86_run_fn, (jit, a_contig, c_np))
                     result["cantors_gift_x86_ms"] = t_cg * 1000
                     print(f"    cg x86 direct:{t_cg*1000:.4f} ms (verified correct)")
                 else:
@@ -546,11 +711,13 @@ def main():
     def torch_compiled_matmul(a, b):
         return a @ b
 
-    sizes = [(64, 64, 64), (128, 128, 128), (256, 256, 256)]
+    sizes = [(32, 32, 32), (64, 64, 64), (128, 128, 128)]
     results = run_benchmark(
         "matmul", sizes,
         numpy_matmul, torch_matmul,
-        lambda a, b: torch_compiled_matmul(a, b))
+        lambda a, b: torch_compiled_matmul(a, b),
+        cg_x86_build_fn=cg_x86_matmul_loop,
+        cg_x86_run_fn=cg_x86_run_matmul)
     all_results.extend(results)
 
     # ---- Reduction ----

@@ -195,10 +195,91 @@ void X86Emitter::vmovaps_load(X86VReg dst, X86Reg base, i32 offset, VEXWidth w) 
 void X86Emitter::vmovaps_store(X86Reg base, i32 offset, X86VReg src, VEXWidth w) {
     // VMOVAPS [m128/m256], xmm/ymm
     // VEX.[128|256].0F.29 /r
-    // Here dst is the memory operand and src is the vector register.
-    // In VEX encoding, the vvvv field is 0 (no src1).
-    emit_vex_3byte(w, X86VReg::XMM0 /*unused*/, X86VReg::XMM0 /*unused*/, base, 0);
+    emit_vex_3byte(w, X86VReg::XMM0, X86VReg::XMM0, base, 0);
     bytes_.push_back(0x29);
+    u8 base_lo = static_cast<u8>(base) & 7;
+    if (base_lo == 4) {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(src) & 7, 4));
+        bytes_.push_back(sib(0, 4, base_lo));
+    } else {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(src) & 7, base_lo));
+    }
+    emit_u32(static_cast<u32>(offset));
+}
+
+// VMOVUPS: unaligned load/store. Same encoding as VMOVAPS but opcodes
+// 0x10 (load) and 0x11 (store) instead of 0x28/0x29.
+void X86Emitter::vmovups_load(X86VReg dst, X86Reg base, i32 offset, VEXWidth w) {
+    emit_vex_3byte(w, dst, X86VReg::XMM0, base, 0);
+    bytes_.push_back(0x10); // VMOVUPS load opcode
+    u8 base_lo = static_cast<u8>(base) & 7;
+    if (base_lo == 4) {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(dst) & 7, 4));
+        bytes_.push_back(sib(0, 4, base_lo));
+    } else {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(dst) & 7, base_lo));
+    }
+    emit_u32(static_cast<u32>(offset));
+}
+
+void X86Emitter::vmovups_store(X86Reg base, i32 offset, X86VReg src, VEXWidth w) {
+    emit_vex_3byte(w, X86VReg::XMM0, X86VReg::XMM0, base, 0);
+    bytes_.push_back(0x11); // VMOVUPS store opcode
+    u8 base_lo = static_cast<u8>(base) & 7;
+    if (base_lo == 4) {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(src) & 7, 4));
+        bytes_.push_back(sib(0, 4, base_lo));
+    } else {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(src) & 7, base_lo));
+    }
+    emit_u32(static_cast<u32>(offset));
+}
+
+// VMOVSS: scalar single-precision load/store.
+// VEX.128.F3.0F.10 /r (load): loads 32 bits from memory into low lane.
+// VEX.128.F3.0F.11 /r (store): stores low 32 bits to memory.
+// pp=F3=10 (binary), mmmmm=00001 (0F map), W=0, L=0.
+void X86Emitter::vmovss_load(X86VReg dst, X86Reg base, i32 offset) {
+    // 3-byte VEX: C4 [R X B mmmmm] [W vvvv L pp]
+    u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;
+    u8 x_bit = 1;
+    u8 b_bit = (static_cast<u8>(base) >= 8) ? 0 : 1;
+    u8 w_bit = 0;
+    u8 vvvv = 0xF; // no src1
+    u8 l_bit = 0;  // 128-bit
+    u8 pp = 0b10;  // F3 prefix
+    u8 mmmmm = 0b00001; // 0F map
+    u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
+    u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
+    bytes_.push_back(0xC4);
+    bytes_.push_back(byte2);
+    bytes_.push_back(byte3);
+    bytes_.push_back(0x10); // VMOVSS load opcode
+    u8 base_lo = static_cast<u8>(base) & 7;
+    if (base_lo == 4) {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(dst) & 7, 4));
+        bytes_.push_back(sib(0, 4, base_lo));
+    } else {
+        bytes_.push_back(modrm(0b10, static_cast<u8>(dst) & 7, base_lo));
+    }
+    emit_u32(static_cast<u32>(offset));
+}
+
+void X86Emitter::vmovss_store(X86Reg base, i32 offset, X86VReg src) {
+    u8 r_bit = (static_cast<u8>(src) >= 8) ? 0 : 1;
+    u8 x_bit = 1;
+    u8 b_bit = (static_cast<u8>(base) >= 8) ? 0 : 1;
+    u8 w_bit = 0;
+    u8 vvvv = 0xF;
+    u8 l_bit = 0;
+    u8 pp = 0b10;  // F3 prefix
+    u8 mmmmm = 0b00001;
+    u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
+    u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
+    bytes_.push_back(0xC4);
+    bytes_.push_back(byte2);
+    bytes_.push_back(byte3);
+    bytes_.push_back(0x11); // VMOVSS store opcode
     u8 base_lo = static_cast<u8>(base) & 7;
     if (base_lo == 4) {
         bytes_.push_back(modrm(0b10, static_cast<u8>(src) & 7, 4));
@@ -229,23 +310,136 @@ void X86Emitter::vmulps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
 
 void X86Emitter::vfmadd231ps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
     // VFMADD231PS: VEX.128.66.0F38.W0 B8 /r
-    // Unlike VADDPS (which is VEX.0F.58 with pp=00), FMA uses pp=01 (66).
-    // The 0F38 map + pp=01 + opcode B8 = VFMADD231PS (single-precision).
     u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;
     u8 x_bit = 1;
     u8 b_bit = (static_cast<u8>(src2) >= 8) ? 0 : 1;
-    u8 w_bit = 0;       // W=0 for single-precision FMA
+    u8 w_bit = 0;
     u8 vvvv = static_cast<u8>(~static_cast<u8>(src1)) & 0xF;
     u8 l_bit = (w == VEXWidth::YMM) ? 1 : 0;
-    u8 pp = 0b01;       // 66 prefix (required for VFMADD231PS per SDM)
+    u8 pp = 0b01;       // 66 prefix (packed)
     u8 mmmmm = 0b00010; // 0F38 map
     u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
     u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
     bytes_.push_back(0xC4);
     bytes_.push_back(byte2);
     bytes_.push_back(byte3);
-    bytes_.push_back(0xB8); // VFMADD231PS opcode in 0F38 map
+    bytes_.push_back(0xB8);
     bytes_.push_back(modrm(0b11, static_cast<u8>(dst) & 7, static_cast<u8>(src2) & 7));
+}
+
+// VFMADD231SS: VEX.128.66.0F38.W0 B9 /r
+// Scalar FMA: only operates on the low 32 bits (one float).
+// Same pp as packed (66), different opcode (B9 vs B8).
+void X86Emitter::vfmadd231ss(X86VReg dst, X86VReg src1, X86VReg src2) {
+    u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;
+    u8 x_bit = 1;
+    u8 b_bit = (static_cast<u8>(src2) >= 8) ? 0 : 1;
+    u8 w_bit = 0;
+    u8 vvvv = static_cast<u8>(~static_cast<u8>(src1)) & 0xF;
+    u8 l_bit = 0;       // 128-bit
+    u8 pp = 0b01;       // 66 prefix (same as packed FMA)
+    u8 mmmmm = 0b00010; // 0F38 map
+    u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
+    u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
+    bytes_.push_back(0xC4);
+    bytes_.push_back(byte2);
+    bytes_.push_back(byte3);
+    bytes_.push_back(0xB9); // VFMADD231SS opcode (B9, not B8)
+    bytes_.push_back(modrm(0b11, static_cast<u8>(dst) & 7, static_cast<u8>(src2) & 7));
+}
+
+// ---- VXORPS: zero a vector register ----
+// VEX.128.0F.57 /r
+// pp=00 (no prefix) for single-precision packed.
+void X86Emitter::vxorps(X86VReg dst, X86VReg src) {
+    emit_vex_3byte(VEXWidth::XMM, dst, src, static_cast<X86Reg>(static_cast<u8>(src) & 7), 0);
+    bytes_.push_back(0x57); // VXORPS opcode
+    bytes_.push_back(modrm(0b11, static_cast<u8>(dst) & 7, static_cast<u8>(src) & 7));
+}
+
+// ---- VMAXPS: dst = max(src1, src2) ----
+// VEX.128.0F.5F /r, pp=00
+void X86Emitter::vmaxps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
+    emit_vex_3byte(w, dst, src1, static_cast<X86Reg>(static_cast<u8>(src2) & 7), 0);
+    bytes_.push_back(0x5F); // VMAXPS opcode
+    bytes_.push_back(modrm(0b11, static_cast<u8>(dst) & 7, static_cast<u8>(src2) & 7));
+}
+
+// ---- VSUBPS: dst = src1 - src2 ----
+// VEX.128.0F.5C /r, pp=00
+void X86Emitter::vsubps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
+    emit_vex_3byte(w, dst, src1, static_cast<X86Reg>(static_cast<u8>(src2) & 7), 0);
+    bytes_.push_back(0x5C); // VSUBPS opcode
+    bytes_.push_back(modrm(0b11, static_cast<u8>(dst) & 7, static_cast<u8>(src2) & 7));
+}
+
+// ---- Loop / control flow ----
+
+void X86Emitter::mark_label(LabelId id) {
+    label_positions_[id] = bytes_.size();
+}
+
+void X86Emitter::jne(LabelId id) {
+    // JNZ rel32: 0F 85 cd
+    bytes_.push_back(0x0F);
+    bytes_.push_back(0x85);
+    // Reserve 4 bytes for the displacement; patch later.
+    pending_patches_.push_back({bytes_.size(), id});
+    emit_u32(0);
+}
+
+void X86Emitter::je(LabelId id) {
+    // JZ rel32: 0F 84 cd
+    bytes_.push_back(0x0F);
+    bytes_.push_back(0x84);
+    pending_patches_.push_back({bytes_.size(), id});
+    emit_u32(0);
+}
+
+void X86Emitter::jnz(LabelId id) { jne(id); }
+void X86Emitter::jz(LabelId id)  { je(id); }
+
+void X86Emitter::jmp(LabelId id) {
+    // JMP rel32: E9 cd
+    bytes_.push_back(0xE9);
+    pending_patches_.push_back({bytes_.size(), id});
+    emit_u32(0);
+}
+
+void X86Emitter::dec_reg(X86Reg r) {
+    // REX.W + FF /1  DEC r/m64
+    bool b = static_cast<u8>(r) >= 8;
+    emit_rex(true, false, false, b);
+    bytes_.push_back(0xFF);
+    bytes_.push_back(modrm(0b11, 1, static_cast<u8>(r) & 7));
+}
+
+void X86Emitter::cmp_imm32(X86Reg r, i32 imm) {
+    // REX.W + 81 /7  CMP r/m64, imm32
+    bool b = static_cast<u8>(r) >= 8;
+    emit_rex(true, false, false, b);
+    bytes_.push_back(0x81);
+    bytes_.push_back(modrm(0b11, 7, static_cast<u8>(r) & 7));
+    emit_u32(static_cast<u32>(imm));
+}
+
+void X86Emitter::resolve_patches() {
+    for (auto& p : pending_patches_) {
+        auto it = label_positions_.find(p.target_label);
+        if (it == label_positions_.end()) continue; // unresolved label
+        // The displacement is relative to the instruction AFTER the jump.
+        // The jump instruction is: opcode (2 bytes for Jcc, 1 for JMP) +
+        // 4 bytes displacement. The displacement is measured from the end
+        // of the jump instruction.
+        usize jump_end = p.patch_offset + 4; // end of the 4-byte displacement
+        i32 disp = static_cast<i32>(it->second) - static_cast<i32>(jump_end);
+        // Patch the 4 bytes at p.patch_offset.
+        bytes_[p.patch_offset + 0] = static_cast<u8>(disp & 0xFF);
+        bytes_[p.patch_offset + 1] = static_cast<u8>((disp >> 8) & 0xFF);
+        bytes_[p.patch_offset + 2] = static_cast<u8>((disp >> 16) & 0xFF);
+        bytes_[p.patch_offset + 3] = static_cast<u8>((disp >> 24) & 0xFF);
+    }
+    pending_patches_.clear();
 }
 
 } // namespace cg
