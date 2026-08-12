@@ -111,6 +111,7 @@ public:
 // ---------------------------------------------------------------------------
 inline SmallVector<i64> row_major_strides(const Shape& s) {
     SmallVector<i64> out(s.rank(), 1);
+    if (s.rank() == 0) return out;
     for (usize i = s.rank() - 1; i-- > 0;)
         out[i] = out[i + 1] * s[i + 1]->value;
     return out;

@@ -75,7 +75,7 @@ library handles the rest.
 
 ## Status
 
-This is the foundational commit. The following subsystems are implemented and
+This is the second foundational commit. The following subsystems are implemented and
 unit-tested:
 
 - **Core IR**: `Type`, `TensorType`, `Value`, `Operation`, `Block`, `Module`,
@@ -89,19 +89,37 @@ unit-tested:
 - **Analysis framework**: `AnalysisManager` with caching and automatic
   invalidation via `PreservedAnalyses`.
 - **Pass infrastructure**: `Pass`, `PassManager`, `Pipeline`.
-- **Real passes**: canonicalization, CSE, constant folding, DCE, shape
-  inference, layout inference.
+- **Optimization passes**: Canonicalize, CSE, ConstantFolding, DCE,
+  AlgebraicSimplification, SCCP, Fusion (with profitability model),
+  ShapeOptimization, LayoutOptimization, ReductionOptimization,
+  CopyElimination, MemoryPlanning, Specialization.
+- **Global Tensor Analysis (GTA)**: DataflowAnalysis (use-def, def-use,
+  critical path, fanout), LifetimeAnalysis, ArithmeticIntensityAnalysis
+  (memory/compute/launch/latency bound classification),
+  ParallelismAnalysis, ReuseAnalysis (materialize vs recompute),
+  GlobalAliasAnalysis (view-of, slice-of, broadcast-of),
+  GlobalCostAnalysis (decomposed: execution + memory + launch + sync +
+  specialization + code-size), GlobalAnalysisManager facade.
+- **Global Barrier**: legality check, schedule validation, final decision
+  recording (fusion clusters, reused buffers, specializations).
+- **Iterative optimization driver**: runs all passes in phases with
+  analysis feedback between phases, bounded iteration count, converges to
+  fixpoint, then crosses the Global Barrier.
 - **Schedule IR**: `IterationDomain`, `Schedule`, schedule transformations
   (split, tile, interchange, vectorize, parallelize, cache), `ScheduleSpace`.
-- **Cost model**: `HardwareModel`, analytical `CostEstimator`.
+- **Cost model**: `HardwareModel`, analytical `CostEstimator`, `HardwareProfile`
+  (optimizer-facing, decoupled from backend).
 - **Codegen IR**: vector loads/stores, FMA, reductions, barriers, async copies.
 - **Backend interface**: `MachineBackend`, `TargetInfo`, `MachineEmitter`.
 - **Runtime interface**: `Executable`, `Device`, `Stream`, `Allocator`,
   `KernelCache`.
 - **E-graph core**: `ENode`, `EClass`, `EGraph`, rewrites, tensor-aware
   extraction.
-- **Standard ops**: `add`, `sub`, `mul`, `matmul`, `relu`, `broadcast`,
-  `reshape`, `transpose`, `reduce_sum`, `constant`, plus attributes for
+- **Standard ops**: `add`, `sub`, `mul`, `div`, `neg`, `matmul`, `relu`,
+  `gelu`, `sigmoid`, `tanh`, `exp`, `log`, `sqrt`, `broadcast`, `reshape`,
+  `transpose`, `reduce_sum/max/mean`, `cast`, `copy`, `gather`, `scatter`,
+  `concat`, `slice`, `softmax`, `layernorm`, `batchnorm`, `conv2d`,
+  `constant`, `input`, `output`, `return`, `alloc`, `free`, plus attributes for
   layouts, dtypes, and effects.
 
 The CPU/CUDA/AMD backends are intentionally interface-only at this stage; the

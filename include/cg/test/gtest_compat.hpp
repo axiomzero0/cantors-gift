@@ -177,3 +177,6 @@ void assert_ge(const char* file, int line, const char* a_expr, const char* b_exp
         (void)argc; (void)argv;                                              \
         return ::cg_test::run_all();                                         \
     }
+
+#define SUCCEED() ((void)0)
+#define FAIL()    (::cg_test::assert_true(__FILE__, __LINE__, "FAIL()", false))
