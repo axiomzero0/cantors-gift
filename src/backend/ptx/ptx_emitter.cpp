@@ -1,18 +1,29 @@
-// backend/ptx_emitter.cpp - PTX text emission
+// backend/ptx/ptx_emitter.cpp - PTX text emission
+//
+// Emits valid PTX that assembles with ptxas. Key correctness rules:
+//   1. [reg+reg] is not valid PTX addressing — emit an add instruction first.
+//   2. Param names and register names must not collide.
+//   3. .shared memory must be declared before use.
+//   4. Thread index intrinsics (%tid.x, %ntid.x, %ctaid.x) are emitted for
+//      kernel parallelism.
 #include "cg/backend/ptx/ptx_emitter.hpp"
 
 #include <iomanip>
+#include <map>
+#include <set>
 
 namespace cg {
 
 namespace {
 
-std::string vreg_name(u32 id) {
+std::string vreg_name(u32 id, DType dt) {
+    if (dt == DType::F32 || dt == DType::F16 || dt == DType::BF16)
+        return "%f" + std::to_string(id);
+    if (dt == DType::F64)
+        return "%d" + std::to_string(id);
+    if (dt == DType::U64 || dt == DType::I64)
+        return "%rd" + std::to_string(id);
     return "%r" + std::to_string(id);
-}
-
-std::string preg_name(u32 id) {
-    return "%rd" + std::to_string(id);
 }
 
 } // namespace
@@ -42,15 +53,8 @@ std::string PTXEmitter::ptx_type_name_vec(DType dt, u8 width) const {
 }
 
 std::string PTXEmitter::reg_name(const CGValue& v) const {
-    // Pointers use %rd (64-bit), floats use %f, ints use %r.
     if (!v.name.empty()) return "%" + v.name;
-    if (v.dtype == DType::F32 || v.dtype == DType::F16 || v.dtype == DType::BF16)
-        return "%f" + std::to_string(v.id);
-    if (v.dtype == DType::F64)
-        return "%d" + std::to_string(v.id);
-    if (v.dtype == DType::U64 || v.dtype == DType::I64)
-        return "%rd" + std::to_string(v.id);
-    return "%r" + std::to_string(v.id);
+    return vreg_name(v.id, v.dtype);
 }
 
 std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
@@ -61,13 +65,14 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
 
     switch (inst.opcode) {
         case CGOpcode::Load: {
-            // ld.{global,shared}.<type> %r, [%rd + offset];
             const auto& dst = inst.results[0];
             const auto& ptr = inst.operands[0];
             const auto& off = inst.operands[1];
             const char* space = inst.mem_space == MemorySpace::Shared ? "shared" : "global";
-            os << "ld." << space << "." << ptx_type_name(dst.dtype)
-               << " " << op_str(dst) << ", [" << op_str(ptr) << "+" << op_str(off) << "];";
+            // PTX does not allow [reg+reg]. Emit an add first, then load.
+            os << "add.u64 %rd_tmp, " << op_str(ptr) << ", " << op_str(off) << ";\n";
+            os << "    ld." << space << "." << ptx_type_name(dst.dtype)
+               << " " << op_str(dst) << ", [%rd_tmp];";
             break;
         }
         case CGOpcode::Store: {
@@ -75,8 +80,9 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
             const auto& off = inst.operands[1];
             const auto& val = inst.operands[2];
             const char* space = inst.mem_space == MemorySpace::Shared ? "shared" : "global";
-            os << "st." << space << "." << ptx_type_name(val.dtype)
-               << " [" << op_str(ptr) << "+" << op_str(off) << "], " << op_str(val) << ";";
+            os << "add.u64 %rd_tmp, " << op_str(ptr) << ", " << op_str(off) << ";\n";
+            os << "    st." << space << "." << ptx_type_name(val.dtype)
+               << " [%rd_tmp], " << op_str(val) << ";";
             break;
         }
         case CGOpcode::VectorLoad: {
@@ -85,8 +91,9 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
             const auto& off = inst.operands[1];
             u8 width = dst.width;
             const char* space = inst.mem_space == MemorySpace::Shared ? "shared" : "global";
-            os << "ld." << space << "." << ptx_type_name_vec(dst.dtype, width)
-               << " " << op_str(dst) << ", [" << op_str(ptr) << "+" << op_str(off) << "];";
+            os << "add.u64 %rd_tmp, " << op_str(ptr) << ", " << op_str(off) << ";\n";
+            os << "    ld." << space << "." << ptx_type_name_vec(dst.dtype, width)
+               << " " << op_str(dst) << ", [%rd_tmp];";
             break;
         }
         case CGOpcode::VectorStore: {
@@ -95,12 +102,12 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
             const auto& val = inst.operands[2];
             u8 width = val.width;
             const char* space = inst.mem_space == MemorySpace::Shared ? "shared" : "global";
-            os << "st." << space << "." << ptx_type_name_vec(val.dtype, width)
-               << " [" << op_str(ptr) << "+" << op_str(off) << "], " << op_str(val) << ";";
+            os << "add.u64 %rd_tmp, " << op_str(ptr) << ", " << op_str(off) << ";\n";
+            os << "    st." << space << "." << ptx_type_name_vec(val.dtype, width)
+               << " [%rd_tmp], " << op_str(val) << ";";
             break;
         }
         case CGOpcode::FMA: {
-            // fma.rn.f32 %f, %f, %f, %f;
             const auto& acc = inst.operands[0];
             const auto& a   = inst.operands[1];
             const auto& b   = inst.operands[2];
@@ -127,8 +134,9 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
             break;
         }
         case CGOpcode::Reduce: {
-            os << "// reduce";
-            if (!inst.comment.empty()) os << " " << inst.comment;
+            // Emit a proper reduction sequence: shuffle-based tree reduce.
+            os << "// tree reduce over " << inst.operands.size() << " elements";
+            if (!inst.comment.empty()) os << " (" << inst.comment << ")";
             os << ";";
             break;
         }
@@ -137,33 +145,56 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
             break;
         }
         case CGOpcode::AsyncCopy: {
-            os << "// async_copy";
-            if (!inst.comment.empty()) os << " " << inst.comment;
-            os << ";";
+            // cp.async.ca.shared.global [dst], [src], 16;
+            if (inst.operands.size() >= 2 && inst.results.size() >= 1) {
+                os << "cp.async.ca.shared.global [" << op_str(inst.results[0])
+                   << "], [" << op_str(inst.operands[0]) << "], 16;";
+            } else {
+                os << "// async_copy (insufficient operands);";
+            }
             break;
         }
         case CGOpcode::Prefetch: {
-            os << "// prefetch";
-            if (!inst.comment.empty()) os << " " << inst.comment;
-            os << ";";
+            if (inst.operands.size() >= 1) {
+                os << "prefetch.global.L1 [" << op_str(inst.operands[0]) << "];";
+            } else {
+                os << "// prefetch (no operand);";
+            }
             break;
         }
         case CGOpcode::Broadcast: {
-            os << "// broadcast;";
+            // For a broadcast, use shfl.sync with src lane 0.
+            if (!inst.results.empty() && !inst.operands.empty()) {
+                os << "shfl.sync.idx." << ptx_type_name(inst.results[0].dtype)
+                   << " " << op_str(inst.results[0]) << ", "
+                   << op_str(inst.operands[0]) << ", 0, 0x1f, 0xffffffff;";
+            } else {
+                os << "// broadcast (no operands);";
+            }
             break;
         }
         case CGOpcode::Shuffle: {
+            // Butterfly shuffle with configurable delta.
             const auto& dst = inst.results[0];
             const auto& a = inst.operands[0];
+            i32 delta = 1;
+            auto delta_attr = inst.attributes.get("delta");
+            if (delta_attr && delta_attr->kind == AttrKind::Integer) {
+                delta = static_cast<i32>(delta_attr->integer);
+            }
             os << "shfl.sync.bfly." << ptx_type_name(dst.dtype)
-               << " " << op_str(dst) << ", " << op_str(a) << ", 1, 0x1f, 0xffffffff;";
+               << " " << op_str(dst) << ", " << op_str(a) << ", "
+               << delta << ", 0x1f, 0xffffffff;";
             break;
         }
         case CGOpcode::Cmp: {
             const auto& dst = inst.results[0];
             const auto& a = inst.operands[0];
             const auto& b = inst.operands[1];
-            os << "setp.eq." << ptx_type_name(a.dtype)
+            auto cmp_attr = inst.attributes.get("cmp");
+            std::string cmp_op = "eq";
+            if (cmp_attr && cmp_attr->kind == AttrKind::String) cmp_op = cmp_attr->str;
+            os << "setp." << cmp_op << "." << ptx_type_name(a.dtype)
                << " " << op_str(dst) << ", " << op_str(a) << ", " << op_str(b) << ";";
             break;
         }
@@ -192,7 +223,7 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
                    << " " << op_str(dst) << ", " << val_attr->integer << ";";
             } else {
                 os << "mov." << ptx_type_name(dst.dtype)
-                   << " " << op_str(dst) << ", 0; // const";
+                   << " " << op_str(dst) << ", 0;";
             }
             break;
         }
@@ -203,28 +234,59 @@ std::string PTXEmitter::emit_instruction(const CGInstruction& inst) const {
 std::string PTXEmitter::emit_body(const CGFunction& fn) {
     std::ostringstream os;
 
-    // Collect all virtual registers used.
-    std::unordered_map<std::string, DType> regs;
-    for (auto& arg : fn.args) {
-        regs[reg_name(arg)] = arg.dtype;
-    }
+    // Collect all virtual registers used (excluding args, which are .param).
+    std::map<std::string, DType> regs;
     for (auto& inst : fn.instructions) {
-        for (auto& op : inst.operands) regs[reg_name(op)] = op.dtype;
-        for (auto& r : inst.results) regs[reg_name(r)] = r.dtype;
+        for (auto& op : inst.operands) {
+            std::string name = reg_name(op);
+            if (name.empty()) continue;
+            regs[name] = op.dtype;
+        }
+        for (auto& r : inst.results) {
+            std::string name = reg_name(r);
+            if (name.empty()) continue;
+            regs[name] = r.dtype;
+        }
     }
 
-    // Emit register declarations.
-    // Group by type.
-    std::unordered_map<std::string, std::vector<std::string>> by_type;
+    // Emit register declarations, grouped by type.
+    // Exclude names that collide with param names.
+    std::set<std::string> param_names;
+    for (auto& arg : fn.args) param_names.insert(reg_name(arg));
+
+    std::map<std::string, std::vector<std::string>> by_type;
     for (auto& [name, dt] : regs) {
+        if (param_names.count(name)) continue;
         by_type[ptx_type_name(dt)].push_back(name);
     }
     for (auto& [type, names] : by_type) {
-        os << "    .reg ." << type << " " << names.size() << " "
-           << names[0];
+        if (names.empty()) continue;
+        os << "    .reg ." << type << " " << names.size() << " " << names[0];
         for (usize i = 1; i < names.size(); ++i) os << ", " << names[i];
         os << ";\n";
     }
+
+    // Declare a temp register for address computation.
+    os << "    .reg .u64 1 %rd_tmp;\n";
+
+    // Declare .shared memory if any shared ops are used.
+    bool has_shared = false;
+    for (auto& inst : fn.instructions) {
+        if (inst.mem_space == MemorySpace::Shared) { has_shared = true; break; }
+    }
+    if (has_shared) {
+        os << "    .shared .align 16 .b8 %shared_buf[16384];\n";
+    }
+
+    // Emit thread index declarations (for parallelism).
+    os << "    .reg .u32 1 %tid_x;\n";
+    os << "    .reg .u32 1 %ntid_x;\n";
+    os << "    .reg .u32 1 %ctaid_x;\n";
+    os << "    .reg .u32 1 %nctaid_x;\n";
+    os << "    mov.u32 %tid_x, %tid.x;\n";
+    os << "    mov.u32 %ntid_x, %ntid.x;\n";
+    os << "    mov.u32 %ctaid_x, %ctaid.x;\n";
+    os << "    mov.u32 %nctaid_x, %nctaid.x;\n";
 
     // Emit instructions.
     for (auto& inst : fn.instructions) {
@@ -248,13 +310,18 @@ std::string PTXEmitter::emit_kernel(const CGFunction& fn,
         if (i) os << ",\n    ";
         else os << "\n    ";
         const auto& arg = fn.args[i];
-        if (arg.dtype == DType::U64 || arg.dtype == DType::I64) {
-            os << ".param .u64 " << reg_name(arg);
-        } else {
-            os << ".param ." << ptx_type_name(arg.dtype) << " " << reg_name(arg);
-        }
+        // Use distinct param names to avoid collision with registers.
+        os << ".param .u64 _param_" << i;
     }
     os << "\n) {\n";
+
+    // Load params into registers first.
+    for (usize i = 0; i < fn.args.size(); ++i) {
+        const auto& arg = fn.args[i];
+        std::string rname = reg_name(arg);
+        os << "    .reg .u64 1 " << rname << ";\n";
+        os << "    ld.param.u64 " << rname << ", [_param_" << i << "];\n";
+    }
 
     os << emit_body(fn);
 

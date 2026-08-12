@@ -182,6 +182,10 @@ void assert_ge(const char* file, int line, const char* a_expr, const char* b_exp
 #define SUCCEED() ((void)0)
 #define FAIL()    (::cg_test::assert_true(__FILE__, __LINE__, "FAIL()", false))
 
+#define EXPECT_FLOAT_EQ(a, b) EXPECT_NEAR(a, b, 1e-6)
+#define EXPECT_DOUBLE_EQ(a, b) EXPECT_NEAR(a, b, 1e-15)
+#define ASSERT_FLOAT_EQ(a, b) EXPECT_NEAR(a, b, 1e-6)
+
 #define EXPECT_NEAR(a, b, abs_err) do { \
     double _va = static_cast<double>(a); \
     double _vb = static_cast<double>(b); \

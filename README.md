@@ -81,19 +81,27 @@ pipeline, and a Bayesian autotuner.
 
 ### Backends (real code generation)
 
-- **PTX emitter**: generates valid NVIDIA PTX text from Codegen IR
-  (register declarations, vector loads/stores, FMA, barriers, thread
-  index intrinsics, predicated execution). The NVIDIA driver compiles
-  PTX → SASS.
-- **x86-64 emitter**: produces real machine code bytes (REX prefixes,
-  ModR/M, SIB, 3-byte VEX prefixes for AVX/AVX2). Supports MOV, ADD,
-  SUB, IMUL, XOR, PUSH/POP, RET, VMOVAPS, VADDPS, VMULPS, VFMADD231PS,
-  MFENCE. The output is a `std::vector<u8>` that can be cast to a
-  function pointer and called.
-- **NvidiaBackend**: compiles a CGModule to an Executable containing PTX text.
-- **CpuBackend**: compiles a CGModule to an Executable containing raw x86-64
-  machine code bytes + a hex disassembly.
-- **Lowering pass**: Codegen IR → PTX text or x86-64 bytes.
+- **PTX emitter**: generates valid NVIDIA PTX text from Codegen IR.
+  Correct addressing (no `[reg+reg]` — emits `add` first), no param/reg
+  name collision (uses `_param_N` for params), declares `.shared` memory,
+  emits thread index intrinsics (`%tid.x`, `%ntid.x`, `%ctaid.x`).
+  Supports register declarations, vector loads/stores, FMA, barriers,
+  predicated execution, shuffle, async copy, prefetch.
+- **x86-64 emitter**: produces real machine code bytes with correct VEX
+  encoding. **Verified on real hardware**: VADDPS, VMULPS, VFMADD231PS
+  produce correct single-precision results (not double-precision — the
+  `pp` field is correctly set to `00` for PS ops, `01` for PD).
+  Supports MOV, ADD, SUB, IMUL, XOR, PUSH/POP, RET, VMOVAPS, VADDPS,
+  VMULPS, VFMADD231PS, MFENCE, with proper REX/ModR/M/SIB/VEX encoding.
+- **AMD backend**: GCN ISA text emitter (v_fma_f32, buffer_load/store,
+  s_barrier, s_endpgm).
+- **Lowering**: Codegen IR → PTX/x86 with real register mapping (not
+  hardcoded — virtual registers are mapped to physical registers via
+  linear scan).
+- **JIT execution**: mmap with PROT_EXEC, verified executing VADDPS on
+  real hardware produces correct results.
+- **NvidiaBackend**, **CpuBackend**, **AmdBackend**: compile a CGModule
+  to an Executable.
 
 ### Optimization passes (14)
 

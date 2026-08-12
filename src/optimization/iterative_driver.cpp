@@ -1,4 +1,8 @@
 // optimization/iterative_driver.cpp - iterative optimization driver
+//
+// The IterativeDriver runs the full optimization pipeline and then lowers
+// the optimized Tensor IR to Codegen IR, connecting the two halves of the
+// compiler. The resulting CGModule can be compiled by any backend.
 #include "cg/optimization/iterative_driver.hpp"
 #include "cg/optimization/canonicalize/algebraic.hpp"
 #include "cg/optimization/canonicalize/canonicalize.hpp"
@@ -19,8 +23,6 @@ namespace cg {
 
 namespace {
 
-// Count ops excluding alloc/free (which are inserted by memory planning and
-// would otherwise prevent convergence).
 usize count_optimizable_ops(const Module& m) {
     usize n = 0;
     for (auto& f : m.functions())
@@ -59,8 +61,7 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 3: e-graph superoptimizer (runs before fusion so fusion
-        // sees the algebraically simplified IR).
+        // Phase 3: e-graph superoptimizer.
         {
             PassManager pm;
             pm.add(std::make_unique<EGraphSuperoptimizerPass>());

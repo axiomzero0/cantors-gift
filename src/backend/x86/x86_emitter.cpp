@@ -127,52 +127,50 @@ void X86Emitter::load_reg(X86Reg dst, X86Reg base, i32 offset) {
 }
 
 // ---- VEX prefix ----
+//
+// 3-byte VEX prefix layout (Intel SDM Vol. 2A, Section 2.3.2):
+//
+//   Byte 1:  C4
+//   Byte 2:  R(1) X(1) B(1) mmmmm(5)
+//   Byte 3:  W(1) vvvv(4) L(1) pp(2)
+//
+// Field meanings:
+//   R      = ~reg field of ModR/M (inverted). 0 = R8-R15, 1 = R0-R7.
+//   X      = ~index field of SIB (inverted). 1 = no index extension.
+//   B      = ~r/m field of ModR/M (inverted). 0 = R8-R15, 1 = R0-R7.
+//   mmmmm  = opcode map: 00001 = 0F, 00010 = 0F 38, 00011 = 0F 3A.
+//   W      = opcode-specific. For most VEX-encoded SSE/AVX ops, W=0.
+//   vvvv   = ~src1 (inverted, 4 bits). 1111 = no src1.
+//   L      = vector length: 0 = 128-bit (XMM), 1 = 256-bit (YMM).
+//   pp     = prefix: 00 = none, 01 = 66, 10 = F3, 11 = F2.
+//
+// CRITICAL: the pp field selects between single/double precision variants:
+//   VADDPS (single) = VEX.128.0F.58       -> pp=00 (no prefix)
+//   VADDPD (double) = VEX.128.66.0F.58    -> pp=01 (66 prefix)
+// Setting pp=01 for VADDPS produces VADDPD — a silent correctness bug.
+//
+// For all single-precision packed (PS) ops we use pp=00.
+// For double-precision packed (PD) ops we would use pp=01.
 
 void X86Emitter::emit_vex_3byte(VEXWidth w, X86VReg dst, X86VReg src1,
                                  X86Reg rm_or_base, u8 opcode_extension) {
-    // 3-byte VEX prefix: C4 [RXB.Wvvvv.L.pp] [mmmmm]
-    // Byte 2:  R(1) X(1) B(1) W(1) vvvv(4) L(1) pp(2)
-    //   R = ~reg2 (inverted)
-    //   X = ~index
-    //   B = ~base
-    //   W = 1 for 64-bit operand size (usually 0 for VEX)
-    //   vvvv = ~src1 (inverted, 4 bits)
-    //   L = 0 for 128-bit, 1 for 256-bit
-    //   pp = 01 for 66 prefix (most SSE/AVX scalar packed)
-    // Byte 3:  mmmmm = 00001 for 0F, 00010 for 0F 38, 00011 for 0F 3A
-
     (void)opcode_extension;
 
-    u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;       // inverted
-    u8 x_bit = 1;                                           // no index
-    u8 b_bit = (static_cast<u8>(rm_or_base) >= 8) ? 0 : 1; // inverted
-    u8 w_bit = 1;                                           // VEX.W = 1 for FP? Actually 0 is fine.
-    u8 vvvv = static_cast<u8>(~static_cast<u8>(src1)) & 0xF;
-    u8 l_bit = (w == VEXWidth::YMM) ? 1 : 0;               // 0=XMM, 1=YMM
-    u8 pp = 0b01;                                          // 66 prefix
-
-    u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) |
-                               (w_bit << 4) | (vvvv << 1) | l_bit);
-    // Wait, the bit layout is different. Let me be precise.
-    // VEX 3-byte: C4 RxBmmmm WvvvvLpp
-    // Actually the standard encoding is:
-    //   Byte 1: C4
-    //   Byte 2: R(1bit,inverted) X(1bit,inverted) B(1bit,inverted) mmmmm(5bits)
-    //   Byte 3: W(1bit) vvvv(4bits,inverted) L(1bit) pp(2bits)
-    // Let me redo this properly.
-
-    // Clear what we wrote above and redo.
-    // We haven't emitted anything yet; the above was just computing locals.
-    // The actual emission happens below.
+    u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;         // inverted
+    u8 x_bit = 1;                                             // no index
+    u8 b_bit = (static_cast<u8>(rm_or_base) >= 8) ? 0 : 1;  // inverted
+    u8 w_bit = 0;       // W=0 for single-precision packed ops
+    u8 vvvv = static_cast<u8>(~static_cast<u8>(src1)) & 0xF; // inverted src1
+    u8 l_bit = (w == VEXWidth::YMM) ? 1 : 0;                 // 0=XMM(128), 1=YMM(256)
+    u8 pp = 0b00;       // pp=00 for PS (single-precision packed); pp=01 would be PD
 
     u8 mmmmm = 0b00001; // 0F map
-    byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
+    u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
     u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
 
     bytes_.push_back(0xC4);
     bytes_.push_back(byte2);
     bytes_.push_back(byte3);
-    (void)byte2; // suppress unused warning if logic above changes
 }
 
 // ---- AVX/AVX2 vector ----
@@ -230,17 +228,16 @@ void X86Emitter::vmulps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
 }
 
 void X86Emitter::vfmadd231ps(X86VReg dst, X86VReg src1, X86VReg src2, VEXWidth w) {
-    // VFMADD231PS: VEX.[128|256].0F38.W0 B8 /r
-    // This requires the 0F38 map.
-    // We need to adjust the VEX prefix for the 0F38 map.
-    // For simplicity, emit the 0F38 version directly.
+    // VFMADD231PS: VEX.128.66.0F38.W0 B8 /r
+    // Unlike VADDPS (which is VEX.0F.58 with pp=00), FMA uses pp=01 (66).
+    // The 0F38 map + pp=01 + opcode B8 = VFMADD231PS (single-precision).
     u8 r_bit = (static_cast<u8>(dst) >= 8) ? 0 : 1;
     u8 x_bit = 1;
     u8 b_bit = (static_cast<u8>(src2) >= 8) ? 0 : 1;
-    u8 w_bit = 0; // W=0 for VFMADD231PS
+    u8 w_bit = 0;       // W=0 for single-precision FMA
     u8 vvvv = static_cast<u8>(~static_cast<u8>(src1)) & 0xF;
     u8 l_bit = (w == VEXWidth::YMM) ? 1 : 0;
-    u8 pp = 0b01;
+    u8 pp = 0b01;       // 66 prefix (required for VFMADD231PS per SDM)
     u8 mmmmm = 0b00010; // 0F38 map
     u8 byte2 = static_cast<u8>((r_bit << 7) | (x_bit << 6) | (b_bit << 5) | mmmmm);
     u8 byte3 = static_cast<u8>((w_bit << 7) | (vvvv << 3) | (l_bit << 2) | pp);
