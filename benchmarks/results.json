@@ -1,0 +1,88 @@
+[
+  {
+    "name": "elementwise_add",
+    "size": "(64, 64)",
+    "numpy_ms": 0.000985000042419415,
+    "torch_ms": 0.0015929999790387228,
+    "torch_compile_ms": 0.021466999896802008,
+    "cantors_gift_ms": null,
+    "cantors_gift_x86_ms": 0.004860999979428016
+  },
+  {
+    "name": "elementwise_add",
+    "size": "(256, 256)",
+    "numpy_ms": 0.014293999811343383,
+    "torch_ms": 0.006575000043085311,
+    "torch_compile_ms": 0.03177700000378536,
+    "cantors_gift_ms": null,
+    "cantors_gift_x86_ms": 0.01995900038309628
+  },
+  {
+    "name": "elementwise_add",
+    "size": "(1024, 1024)",
+    "numpy_ms": 0.5303220004861942,
+    "torch_ms": 0.3643339996415307,
+    "torch_compile_ms": 0.4886599999736063,
+    "cantors_gift_ms": null,
+    "cantors_gift_x86_ms": 1.6266350003206753
+  },
+  {
+    "name": "fused_relu_mul",
+    "size": "(64, 64)",
+    "numpy_ms": 0.0032449997888761573,
+    "torch_ms": 0.002706000486796256,
+    "torch_compile_ms": 0.020482000763877295,
+    "cantors_gift_x86_ms": 0.0051830002121278085
+  },
+  {
+    "name": "fused_relu_mul",
+    "size": "(256, 256)",
+    "numpy_ms": 0.03208899943274446,
+    "torch_ms": 0.012911999874631874,
+    "torch_compile_ms": 0.034855000194511376,
+    "cantors_gift_x86_ms": 0.022184000044944696
+  },
+  {
+    "name": "fused_relu_mul",
+    "size": "(1024, 1024)",
+    "numpy_ms": 0.9234039998773369,
+    "torch_ms": 0.6354750003083609,
+    "torch_compile_ms": 0.49071299963543424,
+    "cantors_gift_x86_ms": 1.813869000216073
+  },
+  {
+    "name": "matmul",
+    "size": "(64, 64, 64)",
+    "numpy_ms": 0.12831799995183246,
+    "torch_ms": 0.011365999853296671,
+    "torch_compile_ms": 0.027661999411066063
+  },
+  {
+    "name": "matmul",
+    "size": "(128, 128, 128)",
+    "numpy_ms": 0.8585010000388138,
+    "torch_ms": 0.02287600000272505,
+    "torch_compile_ms": 0.05502899966813857
+  },
+  {
+    "name": "matmul",
+    "size": "(256, 256, 256)",
+    "numpy_ms": 6.209011999999348,
+    "torch_ms": 0.1060759996107663,
+    "torch_compile_ms": 0.1439199995729723
+  },
+  {
+    "name": "reduction_sum",
+    "size": "(256, 256)",
+    "numpy_ms": 0.014020999515196308,
+    "torch_ms": 0.0071439999373978935,
+    "torch_compile_ms": 0.020232000679243356
+  },
+  {
+    "name": "reduction_sum",
+    "size": "(1024, 1024)",
+    "numpy_ms": 0.25812600051722256,
+    "torch_ms": 0.07268900026247138,
+    "torch_compile_ms": 0.13109799965604907
+  }
+]

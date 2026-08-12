@@ -1140,7 +1140,9 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def("allocate", [](JITMemory& j, std::vector<u8> code) {
             return j.allocate(code);
         })
-        .def("entry", &JITMemory::entry)
+        .def("entry", [](const JITMemory& j) -> uintptr_t {
+            return reinterpret_cast<uintptr_t>(j.entry());
+        })
         .def("size", &JITMemory::size)
         .def("valid", &JITMemory::valid);
 
