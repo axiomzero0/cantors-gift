@@ -11,6 +11,7 @@ project(cantors_gift
 option(CG_BUILD_TESTS        "Build unit and integration tests"             ON)
 option(CG_BUILD_BENCHMARKS   "Build benchmarks"                             OFF)
 option(CG_BUILD_TOOLS        "Build CLI tools (compiler/profiler/tuner)"    OFF)
+option(CG_BUILD_PYTHON       "Build Python bindings via pybind11"           ON)
 option(CG_ENABLE_LTO         "Enable link-time optimization"                OFF)
 option(CG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"            OFF)
 option(CG_FETCH_GOOGLETEST   "Fetch GoogleTest via FetchContent (needs net)" OFF)
@@ -175,6 +176,65 @@ endif()
 # ---------------------------------------------------------------------------
 if(CG_BUILD_TOOLS)
     add_subdirectory(tools)
+endif()
+
+# ---------------------------------------------------------------------------
+# Python bindings
+# ---------------------------------------------------------------------------
+if(CG_BUILD_PYTHON)
+    # Find Python interpreter + development headers.
+    # We try Python3 with Development.Module first; if that fails, we
+    # manually locate the include dir via sysconfig.
+    find_package(Python3 COMPONENTS Interpreter Development.Module QUIET)
+
+    if(NOT Python3_FOUND)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        # Manually locate the include directory.
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} -c "import sysconfig; print(sysconfig.get_path('include'))"
+            OUTPUT_VARIABLE _PYTHON_INCLUDE_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+            OUTPUT_VARIABLE _PYTHON_LIB_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(Python3_INCLUDE_DIRS ${_PYTHON_INCLUDE_DIR})
+        set(Python3_LIBRARIES "")
+        message(STATUS "Python3 development headers: ${Python3_INCLUDE_DIRS}")
+    endif()
+
+    # Try to find pybind11 via the Python module.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import pybind11; print(pybind11.get_cmake_dir())"
+        OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE PYBIND11_CMAKE_RESULT
+        ERROR_QUIET)
+
+    if(PYBIND11_CMAKE_RESULT EQUAL 0)
+        list(APPEND CMAKE_PREFIX_PATH "${PYBIND11_CMAKE_DIR}")
+        find_package(pybind11 CONFIG REQUIRED)
+
+        pybind11_add_module(cantors_gift_py python/bindings.cpp)
+        set_target_properties(cantors_gift_py PROPERTIES OUTPUT_NAME cantors_gift)
+        target_link_libraries(cantors_gift_py PRIVATE cantors_gift)
+        target_compile_features(cantors_gift_py PRIVATE cxx_std_20)
+        # Suppress warnings from pybind11 headers.
+        target_compile_options(cantors_gift_py PRIVATE
+            -Wno-unused-parameter -Wno-sign-compare -Wno-conversion
+            -Wno-sign-conversion -Wno-shadow -Wno-pedantic -Wno-old-style-cast)
+        # If we have manual Python include dirs, add them.
+        if(Python3_INCLUDE_DIRS AND NOT Python3_Development.Module_FOUND)
+            target_include_directories(cantors_gift_py PRIVATE ${Python3_INCLUDE_DIRS})
+        endif()
+        # Install the .so into the build/python/cantors_gift directory.
+        set_target_properties(cantors_gift_py PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/cantors_gift")
+    else()
+        message(STATUS "pybind11 not found; skipping Python bindings. "
+                       "Install with: pip install pybind11")
+        set(CG_BUILD_PYTHON OFF)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

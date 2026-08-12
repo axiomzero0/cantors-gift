@@ -188,6 +188,14 @@ public:
         for (auto it = first; it != last; ++it) emplace_back(*it);
     }
 
+    // Range-based constructor.
+    template <typename It>
+    SmallVector(It first, It last) {
+        usize n = static_cast<usize>(std::distance(first, last));
+        reserve(n);
+        for (auto it = first; it != last; ++it) emplace_back(*it);
+    }
+
     iterator insert(iterator pos, const T& v) {
         usize idx = static_cast<usize>(pos - data());
         if (size_ == capacity_) grow(capacity_ == 0 ? (N == 0 ? 2 : N) : capacity_ * 2);

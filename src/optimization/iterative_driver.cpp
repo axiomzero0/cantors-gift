@@ -19,9 +19,14 @@ namespace cg {
 
 namespace {
 
-usize count_ops(const Module& m) {
+// Count ops excluding alloc/free (which are inserted by memory planning and
+// would otherwise prevent convergence).
+usize count_optimizable_ops(const Module& m) {
     usize n = 0;
-    for (auto& f : m.functions()) n += f->entry()->size();
+    for (auto& f : m.functions())
+        for (auto& op : *f->entry())
+            if (op.opcode != OP_ALLOC && op.opcode != OP_FREE)
+                ++n;
     return n;
 }
 
@@ -29,7 +34,7 @@ usize count_ops(const Module& m) {
 
 IterativeDriverReport IterativeDriver::run(Module& m) {
     IterativeDriverReport report;
-    usize prev_ops = count_ops(m);
+    usize prev_ops = count_optimizable_ops(m);
 
     for (usize iter = 0; iter < opts_.max_iterations; ++iter) {
         report.iterations_run = iter + 1;
@@ -93,7 +98,7 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        usize cur_ops = count_ops(m);
+        usize cur_ops = count_optimizable_ops(m);
         if (cur_ops == prev_ops) {
             report.converged = true;
             break;

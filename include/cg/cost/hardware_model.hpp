@@ -68,6 +68,11 @@ public:
         return compute.get(dt);
     }
 
+    // True iff the target has tensor-core / MMA throughput for `dt`.
+    bool supports_tensor_core(DType dt) const {
+        return tensor_core_flops_per_sec.count(static_cast<u8>(dt)) > 0;
+    }
+
     // Factory: a generic CPU model.
     static HardwareModel generic_cpu();
     // Factory: a generic NVIDIA GPU model.

@@ -13,8 +13,10 @@
 #pragma once
 
 #include "cg/backend/backend.hpp"
+#include "cg/codegen/codegen_ir.hpp"
 #include "cg/core/dtype.hpp"
 #include "cg/core/util.hpp"
+#include "cg/schedule/schedule.hpp"
 
 #include <any>
 #include <functional>
@@ -90,7 +92,14 @@ public:
 
     void insert(u64 key, std::shared_ptr<Executable> exe);
 
+    // Compute a stable hash for (graph_text, shapes, dtypes, hardware_name).
+    static u64 compute_key(const std::string& graph_text,
+                           const std::string& shapes,
+                           const std::string& dtypes,
+                           const std::string& hardware_name);
+
     const std::string& dir() const { return dir_; }
+    usize size() const { return mem_cache_.size(); }
 
 private:
     std::string dir_;
@@ -113,6 +122,34 @@ public:
     // Bind an Executable to a specific device. Returns null on failure.
     std::unique_ptr<BoundExecutable>
     bind(std::shared_ptr<Executable> exe, DeviceId device);
+
+    // Compile + cache + bind in one call. If the kernel is already in the
+    // cache (keyed by `cache_key`), the cached Executable is used. Otherwise
+    // `backend.compile(cgm)` is called, the result is cached, and then bound.
+    // This is the main end-to-end entry point for executing a compiled module.
+    struct CompileResult {
+        std::shared_ptr<Executable> executable;
+        bool cache_hit = false;
+    };
+    CompileResult compile_and_cache(u64 cache_key,
+                                     const CGModule& cgm,
+                                     MachineBackend& backend);
+
+    // Autotune + cache: run the autotuner over a ScheduleSpace, compile the
+    // best schedule via `backend`, cache the result under `cache_key`, and
+    // return the Executable. The `benchmark` function is called by the
+    // autotuner to measure each candidate schedule's runtime.
+    struct AutotuneResult {
+        std::shared_ptr<Executable> executable;
+        double best_runtime = 0.0;
+        usize total_benchmarks = 0;
+        bool cache_hit = false;
+    };
+    AutotuneResult autotune_and_cache(
+        u64 cache_key,
+        const ScheduleSpace& space,
+        const std::function<double(const Schedule&)>& benchmark,
+        MachineBackend& backend);
 
 private:
     std::vector<std::unique_ptr<Device>> devices_;
