@@ -42,6 +42,7 @@
 #include "cg/backend/jit.hpp"
 #include "cg/backend/lowering.hpp"
 #include "cg/backend/nvidia_backend.hpp"
+#include "cg/backend/parallel_executor.hpp"
 #include "cg/backend/ptx/ptx_emitter.hpp"
 #include "cg/backend/x86/x86_emitter.hpp"
 #include "cg/codegen/codegen_ir.hpp"
@@ -1126,7 +1127,39 @@ PYBIND11_MODULE(cantors_gift, m) {
     // ===================================================================
     // Version
     // ===================================================================
-    m.attr("__version__") = "0.4.0";
+    m.attr("__version__") = "0.5.0";
+
+    // ===================================================================
+    // Parallel Executor (multi-threaded JIT)
+    // ===================================================================
+    py::class_<ParallelExecutor>(m, "ParallelExecutor")
+        .def(py::init<u32>(), py::arg("num_threads") = 0)
+        .def("num_threads", &ParallelExecutor::num_threads)
+        .def("execute", [](ParallelExecutor& pe, uintptr_t jit_entry,
+                           py::object a, py::object b, py::object c,
+                           u64 total_elements) {
+            // Extract raw float pointers from numpy arrays.
+            auto get_ptr = [](py::object& arr) -> float* {
+                py::capsule cap;
+                // Try to get array data via the buffer protocol.
+                PyObject* obj = arr.ptr();
+                Py_buffer view;
+                if (PyObject_GetBuffer(obj, &view, PyBUF_SIMPLE) == 0) {
+                    float* ptr = static_cast<float*>(view.buf);
+                    PyBuffer_Release(&view);
+                    return ptr;
+                }
+                return nullptr;
+            };
+            float* a_ptr = get_ptr(a);
+            float* b_ptr = get_ptr(b);
+            float* c_ptr = get_ptr(c);
+            if (!a_ptr || !b_ptr || !c_ptr) {
+                throw std::runtime_error("Failed to get array pointers");
+            }
+            pe.execute(jit_entry, a_ptr, b_ptr, c_ptr, total_elements);
+        }, py::arg("jit_entry"), py::arg("a"), py::arg("b"), py::arg("c"),
+           py::arg("total_elements"));
 
     // ===================================================================
     // Tensor IR -> Codegen IR lowering
