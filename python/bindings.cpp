@@ -37,7 +37,9 @@
 #include "cg/analysis/global_cost.hpp"
 
 #include "cg/autotuner/bayesian_optimizer.hpp"
+#include "cg/backend/amd/amd_backend.hpp"
 #include "cg/backend/cpu_backend.hpp"
+#include "cg/backend/jit.hpp"
 #include "cg/backend/lowering.hpp"
 #include "cg/backend/nvidia_backend.hpp"
 #include "cg/backend/ptx/ptx_emitter.hpp"
@@ -49,6 +51,8 @@
 #include "cg/ir/builder.hpp"
 #include "cg/ir/ops.hpp"
 #include "cg/ir/printer.hpp"
+#include "cg/lowering/tensor_to_codegen.hpp"
+#include "cg/numerical/semantics.hpp"
 #include "cg/optimization/canonicalize/algebraic.hpp"
 #include "cg/optimization/canonicalize/canonicalize.hpp"
 #include "cg/optimization/const_fold/const_fold.hpp"
@@ -72,6 +76,7 @@
 #include "cg/shape/simplifier.hpp"
 #include "cg/shape/solver.hpp"
 #include "cg/shape/inference.hpp"
+#include "cg/vendor/dispatch.hpp"
 
 namespace py = pybind11;
 using namespace cg;
@@ -1104,5 +1109,122 @@ PYBIND11_MODULE(cantors_gift, m) {
     // ===================================================================
     // Version
     // ===================================================================
-    m.attr("__version__") = "0.3.0";
+    m.attr("__version__") = "0.4.0";
+
+    // ===================================================================
+    // Tensor IR -> Codegen IR lowering
+    // ===================================================================
+    py::class_<LoweringOptions>(m, "LoweringOptions")
+        .def(py::init<>())
+        .def_readwrite("default_vector_width", &LoweringOptions::default_vector_width)
+        .def_readwrite("scalarize_small_tensors", &LoweringOptions::scalarize_small_tensors)
+        .def_readwrite("scalarize_threshold", &LoweringOptions::scalarize_threshold)
+        .def_readwrite("matmul_m_tile", &LoweringOptions::matmul_m_tile)
+        .def_readwrite("matmul_n_tile", &LoweringOptions::matmul_n_tile)
+        .def_readwrite("matmul_k_tile", &LoweringOptions::matmul_k_tile);
+
+    py::class_<TensorToCodegenLowering>(m, "TensorToCodegenLowering")
+        .def(py::init<LoweringOptions>(),
+             py::arg("opts") = LoweringOptions{})
+        .def("lower", py::overload_cast<const Module&, const Schedule&>(
+            &TensorToCodegenLowering::lower),
+            py::arg("m"), py::arg("schedule") = Schedule{})
+        .def("options", &TensorToCodegenLowering::options,
+             py::return_value_policy::reference);
+
+    // ===================================================================
+    // JIT execution
+    // ===================================================================
+    py::class_<JITMemory>(m, "JITMemory")
+        .def(py::init<>())
+        .def("allocate", [](JITMemory& j, std::vector<u8> code) {
+            return j.allocate(code);
+        })
+        .def("entry", &JITMemory::entry)
+        .def("size", &JITMemory::size)
+        .def("valid", &JITMemory::valid);
+
+    // ===================================================================
+    // AMD backend
+    // ===================================================================
+    py::class_<GCNEmitter>(m, "GCNEmitter")
+        .def(py::init<>())
+        .def("emit_kernel", &GCNEmitter::emit_kernel,
+             py::arg("fn"), py::arg("kernel_name"),
+             py::arg("gcn_target") = "gfx908")
+        .def("emit_body", &GCNEmitter::emit_body);
+
+    py::class_<AmdBackend, MachineBackend>(m, "AmdBackend")
+        .def(py::init<std::string>(), py::arg("gcn_target") = "gfx908")
+        .def("name", &AmdBackend::name)
+        .def("target_info", &AmdBackend::target_info,
+             py::return_value_policy::reference)
+        .def("compile", &AmdBackend::compile)
+        .def("emit_text", &AmdBackend::emit_text);
+
+    // ===================================================================
+    // Vendor dispatch
+    // ===================================================================
+    py::enum_<VendorKind>(m, "VendorKind")
+        .value("cuBLAS", VendorKind::cuBLAS)
+        .value("cuDNN", VendorKind::cuDNN)
+        .value("rocBLAS", VendorKind::rocBLAS)
+        .value("MIOpen", VendorKind::MIOpen)
+        .value("oneDNN", VendorKind::oneDNN)
+        .value("CUTLASS", VendorKind::CUTLASS)
+        .value("ComposableKernel", VendorKind::ComposableKernel);
+
+    m.def("vendor_name", [](VendorKind k) { return std::string(vendor_name(k)); });
+
+    // VendorKernel and VendorDispatcher are non-copyable (contain
+    // unique_ptr). We expose them via pointer-only interfaces.
+    py::class_<VendorKernel>(m, "VendorKernel")
+        .def("vendor", &VendorKernel::vendor)
+        .def("name", &VendorKernel::name)
+        .def("supports", &VendorKernel::supports)
+        .def("estimated_runtime", &VendorKernel::estimated_runtime);
+
+    // Free functions instead of a class binding for VendorDispatcher.
+    m.def("vendor_find_best", [](const Operation& op) -> VendorKernel* {
+        return VendorDispatcher::instance().find_best(op);
+    }, py::return_value_policy::reference);
+
+    m.def("vendor_has", [](VendorKind k) -> bool {
+        return VendorDispatcher::instance().has_vendor(k);
+    });
+
+    m.def("vendor_num_kernels", []() -> usize {
+        return VendorDispatcher::instance().kernels().size();
+    });
+
+    m.def("vendor_kernels", []() -> std::vector<VendorKernel*> {
+        std::vector<VendorKernel*> ptrs;
+        for (auto& k : VendorDispatcher::instance().kernels())
+            ptrs.push_back(k.get());
+        return ptrs;
+    }, py::return_value_policy::reference);
+
+    // ===================================================================
+    // Numerical semantics
+    // ===================================================================
+    py::enum_<NumericalMode>(m, "NumericalMode")
+        .value("Strict", NumericalMode::Strict)
+        .value("Relaxed", NumericalMode::Relaxed)
+        .value("FastMath", NumericalMode::FastMath);
+
+    m.def("numerical_mode_name", [](NumericalMode m) {
+        return std::string(numerical_mode_name(m));
+    });
+    m.def("allows_reassociation", &allows_reassociation);
+    m.def("allows_contraction", &allows_contraction);
+    m.def("assumes_no_nan", &assumes_no_nan);
+    m.def("allows_reciprocal_approx", &allows_reciprocal_approx);
+    m.def("allows_mul_zero_elimination", &allows_mul_zero_elimination);
+
+    // ===================================================================
+    // Builder convenience for new ops
+    // ===================================================================
+    // (Already bound above; these are the new ops)
+    // conv2d, softmax, layernorm, batchnorm, gather, concat, slice,
+    // sigmoid, tanh, log
 }

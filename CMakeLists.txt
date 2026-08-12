@@ -175,7 +175,10 @@ endif()
 # Tools
 # ---------------------------------------------------------------------------
 if(CG_BUILD_TOOLS)
-    add_subdirectory(tools)
+    add_executable(cgc tools/cgc/cgc.cpp)
+    target_link_libraries(cgc PRIVATE cantors_gift)
+    set_target_properties(cgc PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -105,15 +105,117 @@ KernelCache::lookup(u64 key) {
 
     // Try disk.
     namespace fs = std::filesystem;
-    auto path = fs::path(dir_) / (std::to_string(key) + ".bin");
+    auto path = fs::path(dir_) / (std::to_string(key) + ".cgbin");
     if (!fs::exists(path)) return std::nullopt;
-    // Disk deserialization requires a stable binary schema; for now we only
-    // use the in-memory cache. A future commit will add binary serialization.
-    return std::nullopt;
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+
+    // Binary format (simple, versioned):
+    //   u32 magic ("CGKE")
+    //   u32 version
+    //   u64 name_len + name
+    //   u64 device_kind + u32 device_index
+    //   u64 machine_code_len + bytes
+    //   u64 ptx_text_len + bytes
+    //   u64 disassembly_len + bytes
+    //   u64 entrypoints_count + (name_len + name + offset) * count
+    //   u64 shared_mem_bytes
+    //   u64 constant_mem_bytes
+    //   u32 threads_per_block
+    auto read_u32 = [&]() -> u32 {
+        u32 v; in.read(reinterpret_cast<char*>(&v), 4);
+        return v;
+    };
+    auto read_u64 = [&]() -> u64 {
+        u64 v; in.read(reinterpret_cast<char*>(&v), 8);
+        return v;
+    };
+    auto read_string = [&]() -> std::string {
+        auto len = read_u64();
+        std::string s(len, '\0');
+        in.read(s.data(), len);
+        return s;
+    };
+
+    u32 magic = read_u32();
+    if (magic != 0x454B4743) return std::nullopt; // "CGKE" in little-endian
+    u32 version = read_u32();
+    if (version != 1) return std::nullopt;
+
+    auto exe = std::make_shared<Executable>();
+    exe->name = read_string();
+    exe->target_device.kind = static_cast<DeviceId::Kind>(read_u64());
+    exe->target_device.index = read_u32();
+
+    auto mc_len = read_u64();
+    exe->machine_code.resize(mc_len);
+    in.read(reinterpret_cast<char*>(exe->machine_code.data()), mc_len);
+
+    exe->ptx_text = read_string();
+    exe->disassembly = read_string();
+
+    auto ep_count = read_u64();
+    for (u64 i = 0; i < ep_count; ++i) {
+        auto name = read_string();
+        auto offset = read_u64();
+        exe->entrypoints.push_back({name, offset});
+    }
+
+    exe->shared_mem_bytes = read_u64();
+    exe->constant_mem_bytes = read_u64();
+    exe->threads_per_block = read_u32();
+
+    mem_cache_[key] = exe;
+    return exe;
 }
 
 void KernelCache::insert(u64 key, std::shared_ptr<Executable> exe) {
-    mem_cache_[key] = std::move(exe);
+    mem_cache_[key] = exe;
+
+    // Persist to disk.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(dir_, ec);
+
+    auto path = fs::path(dir_) / (std::to_string(key) + ".cgbin");
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return;
+
+    auto write_u32 = [&](u32 v) {
+        out.write(reinterpret_cast<const char*>(&v), 4);
+    };
+    auto write_u64 = [&](u64 v) {
+        out.write(reinterpret_cast<const char*>(&v), 8);
+    };
+    auto write_string = [&](const std::string& s) {
+        write_u64(s.size());
+        out.write(s.data(), s.size());
+    };
+
+    write_u32(0x454B4743); // "CGKE"
+    write_u32(1);          // version
+
+    write_string(exe->name);
+    write_u64(static_cast<u64>(exe->target_device.kind));
+    write_u32(exe->target_device.index);
+
+    write_u64(exe->machine_code.size());
+    out.write(reinterpret_cast<const char*>(exe->machine_code.data()),
+              exe->machine_code.size());
+
+    write_string(exe->ptx_text);
+    write_string(exe->disassembly);
+
+    write_u64(exe->entrypoints.size());
+    for (auto& [name, offset] : exe->entrypoints) {
+        write_string(name);
+        write_u64(offset);
+    }
+
+    write_u64(exe->shared_mem_bytes);
+    write_u64(exe->constant_mem_bytes);
+    write_u32(exe->threads_per_block);
 }
 
 Runtime::CompileResult Runtime::compile_and_cache(u64 cache_key,

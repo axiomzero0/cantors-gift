@@ -63,6 +63,21 @@ public:
     Value reduce_max(Value a, std::vector<i32> axes, bool keep_dims = false);
     Value cast(Value a, DType target_dtype);
 
+    // ---------- Convenience: domain ops ----------
+    Value conv2d(Value input, Value weight,
+                 i64 stride_h = 1, i64 stride_w = 1,
+                 i64 pad_h = 0, i64 pad_w = 0,
+                 i64 dilation_h = 1, i64 dilation_w = 1);
+    Value softmax(Value a);
+    Value layernorm(Value a);
+    Value batchnorm(Value a);
+    Value gather(Value input, Value indices);
+    Value concat(std::vector<Value> inputs, i64 axis);
+    Value slice(Value input, std::vector<i64> begins, std::vector<i64> ends);
+    Value sigmoid(Value a);
+    Value tanh(Value a);
+    Value log(Value a);
+
 private:
     Function* fn_;
 };

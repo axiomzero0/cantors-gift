@@ -151,4 +151,56 @@ Value Builder::cast(Value a, DType target_dtype) {
     return create(OP_CAST, {a}, std::move(attrs))->results[0];
 }
 
+Value Builder::conv2d(Value input, Value weight,
+                       i64 stride_h, i64 stride_w,
+                       i64 pad_h, i64 pad_w,
+                       i64 dilation_h, i64 dilation_w) {
+    AttributeDict attrs;
+    attrs.set("stride_h", Attribute::make_integer(stride_h));
+    attrs.set("stride_w", Attribute::make_integer(stride_w));
+    attrs.set("pad_h", Attribute::make_integer(pad_h));
+    attrs.set("pad_w", Attribute::make_integer(pad_w));
+    attrs.set("dilation_h", Attribute::make_integer(dilation_h));
+    attrs.set("dilation_w", Attribute::make_integer(dilation_w));
+    SmallVector<Value, 4> ops;
+    ops.push_back(input);
+    ops.push_back(weight);
+    return create(OP_CONV2D, std::move(ops), std::move(attrs))->results[0];
+}
+
+Value Builder::softmax(Value a) {
+    return create(OP_SOFTMAX, {a})->results[0];
+}
+
+Value Builder::layernorm(Value a) {
+    return create(OP_LAYERNORM, {a})->results[0];
+}
+
+Value Builder::batchnorm(Value a) {
+    return create(OP_BATCHNORM, {a})->results[0];
+}
+
+Value Builder::gather(Value input, Value indices) {
+    return create(OP_GATHER, {input, indices})->results[0];
+}
+
+Value Builder::concat(std::vector<Value> inputs, i64 axis) {
+    AttributeDict attrs;
+    attrs.set("axis", Attribute::make_integer(axis));
+    SmallVector<Value, 4> ops;
+    for (auto& v : inputs) ops.push_back(v);
+    return create(OP_CONCAT, std::move(ops), std::move(attrs))->results[0];
+}
+
+Value Builder::slice(Value input, std::vector<i64> begins, std::vector<i64> ends) {
+    AttributeDict attrs;
+    attrs.set("begins", Attribute::make_int_array(std::move(begins)));
+    attrs.set("ends", Attribute::make_int_array(std::move(ends)));
+    return create(OP_SLICE, {input}, std::move(attrs))->results[0];
+}
+
+Value Builder::sigmoid(Value a) { return create(OP_SIGMOID, {a})->results[0]; }
+Value Builder::tanh(Value a)    { return create(OP_TANH, {a})->results[0]; }
+Value Builder::log(Value a)     { return create(OP_LOG, {a})->results[0]; }
+
 } // namespace cg

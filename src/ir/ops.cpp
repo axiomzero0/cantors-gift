@@ -476,6 +476,226 @@ void OpRegistry::register_builtins() {
         i.effects = EffectSet(static_cast<u16>(EffectKind::Free) | static_cast<u16>(EffectKind::HasSideEffect));
         reg(std::move(i));
     }
+
+    // ---- Conv2D ----
+    // input:  [N, C_in, H, W]
+    // weight: [C_out, C_in, kH, kW]
+    // output: [N, C_out, H_out, W_out]
+    // H_out = (H + 2*pad_h - dilation*(kH-1) - 1) / stride_h + 1
+    {
+        OpInfo i;
+        i.opcode = OP_CONV2D; i.name = "conv2d";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 2) {
+                if (err) *err = "conv2d: expected 2 operands (input, weight)";
+                return {};
+            }
+            auto input = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            auto weight = std::dynamic_pointer_cast<const TensorType>(operands[1]);
+            if (!input || !weight) {
+                if (err) *err = "conv2d: operands must be tensors";
+                return {};
+            }
+            if (input->shape.rank() != 4 || weight->shape.rank() != 4) {
+                if (err) *err = "conv2d: input must be 4D (NCHW) and weight 4D";
+                return {};
+            }
+            // Read stride, padding, dilation from attributes (defaults: 1, 0, 1).
+            auto get_int = [&](const char* name, i64 def) -> i64 {
+                auto a = attrs.get(name);
+                if (a && a->kind == AttrKind::Integer) return a->integer;
+                return def;
+            };
+            i64 stride_h = get_int("stride_h", 1);
+            i64 stride_w = get_int("stride_w", 1);
+            i64 pad_h = get_int("pad_h", 0);
+            i64 pad_w = get_int("pad_w", 0);
+            i64 dilation_h = get_int("dilation_h", 1);
+            i64 dilation_w = get_int("dilation_w", 1);
+
+            i64 N = input->shape[0]->is_constant() ? input->shape[0]->value : 0;
+            i64 H = input->shape[2]->is_constant() ? input->shape[2]->value : 0;
+            i64 W = input->shape[3]->is_constant() ? input->shape[3]->value : 0;
+            i64 C_out = weight->shape[0]->is_constant() ? weight->shape[0]->value : 0;
+            i64 kH = weight->shape[2]->is_constant() ? weight->shape[2]->value : 0;
+            i64 kW = weight->shape[3]->is_constant() ? weight->shape[3]->value : 0;
+
+            i64 H_out = (H + 2*pad_h - dilation_h*(kH-1) - 1) / stride_h + 1;
+            i64 W_out = (W + 2*pad_w - dilation_w*(kW-1) - 1) / stride_w + 1;
+
+            Shape out_shape = Shape::from_constants({N, C_out, H_out, W_out});
+            return { make_tensor_type(out_shape, input->dtype, input->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- Softmax ----
+    // input: [..., D]  output: same shape
+    {
+        OpInfo i;
+        i.opcode = OP_SOFTMAX; i.name = "softmax";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- LayerNorm ----
+    // input: [..., D]  output: same shape
+    {
+        OpInfo i;
+        i.opcode = OP_LAYERNORM; i.name = "layernorm";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- BatchNorm ----
+    // input: [N, C, ...]  output: same shape
+    {
+        OpInfo i;
+        i.opcode = OP_BATCHNORM; i.name = "batchnorm";
+        i.traits = OpTraits().with(OpTrait::Pure);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- Gather ----
+    // input: [A, ...], indices: [B, ...]  output: [B, ...] (along axis)
+    {
+        OpInfo i;
+        i.opcode = OP_GATHER; i.name = "gather";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::MemoryRead);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 2) {
+                if (err) *err = "gather: expected 2 operands";
+                return {};
+            }
+            auto input = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            auto indices = std::dynamic_pointer_cast<const TensorType>(operands[1]);
+            if (!input || !indices) {
+                if (err) *err = "gather: operands must be tensors";
+                return {};
+            }
+            // Output shape = indices shape (simplified).
+            return { make_tensor_type(indices->shape, input->dtype, input->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- Scatter ----
+    // input, indices, updates -> output (same shape as input)
+    {
+        OpInfo i;
+        i.opcode = OP_SCATTER; i.name = "scatter";
+        i.traits = OpTraits().with(OpTrait::MemoryWrite).with(OpTrait::HasSideEffect);
+        i.effects = EffectSet::read_write();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict&,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.empty()) {
+                if (err) *err = "scatter: expected at least 1 operand";
+                return {};
+            }
+            return { operands[0] };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- Concat ----
+    // inputs: list of tensors  output: concatenated along axis
+    {
+        OpInfo i;
+        i.opcode = OP_CONCAT; i.name = "concat";
+        i.traits = OpTraits().with(OpTrait::Pure);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.empty()) {
+                if (err) *err = "concat: expected at least 1 operand";
+                return {};
+            }
+            auto first = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!first) {
+                if (err) *err = "concat: operands must be tensors";
+                return {};
+            }
+            auto axis_attr = attrs.get("axis");
+            i64 axis = (axis_attr && axis_attr->kind == AttrKind::Integer)
+                ? axis_attr->integer : 0;
+            if (axis < 0) axis += static_cast<i64>(first->shape.rank());
+
+            // Sum the sizes along the concat axis.
+            i64 total = 0;
+            for (auto& t : operands) {
+                auto tt = std::dynamic_pointer_cast<const TensorType>(t);
+                if (!tt) continue;
+                if (static_cast<usize>(axis) < tt->shape.rank() &&
+                    tt->shape[axis]->is_constant()) {
+                    total += tt->shape[axis]->value;
+                }
+            }
+
+            // Build output shape.
+            Shape out = first->shape;
+            if (static_cast<usize>(axis) < out.rank()) {
+                out.dims()[axis] = DimExpr::make_constant(total);
+            }
+            return { make_tensor_type(out, first->dtype, first->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- Slice ----
+    // input: [...]  output: sub-range along each dim
+    {
+        OpInfo i;
+        i.opcode = OP_SLICE; i.name = "slice";
+        i.traits = OpTraits().with(OpTrait::Pure);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 1) {
+                if (err) *err = "slice: expected 1 operand";
+                return {};
+            }
+            auto input = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!input) {
+                if (err) *err = "slice: operand must be a tensor";
+                return {};
+            }
+            // Read begins, ends from attributes.
+            auto begins = attrs.get("begins");
+            auto ends = attrs.get("ends");
+            if (!begins || !ends ||
+                begins->kind != AttrKind::IntegerArray ||
+                ends->kind != AttrKind::IntegerArray) {
+                if (err) *err = "slice: missing 'begins' or 'ends' attribute";
+                return {};
+            }
+            Shape out;
+            for (usize d = 0; d < input->shape.rank(); ++d) {
+                i64 begin = d < begins->ints.size() ? begins->ints[d] : 0;
+                i64 end = d < ends->ints.size()
+                    ? ends->ints[d]
+                    : (input->shape[d]->is_constant() ? input->shape[d]->value : 0);
+                out.dims().push_back(DimExpr::make_constant(end - begin));
+            }
+            return { make_tensor_type(out, input->dtype, input->device) };
+        };
+        reg(std::move(i));
+    }
 }
 
 Opcode register_user_op(OpInfo info) {
