@@ -101,14 +101,9 @@ TEST(Integration, EGraphSuperoptimize) {
     auto sum = g.add({"add", {x, zero}});
 
     EGraph::Rewrite rw;
-    rw.lhs = {"add", {0, 1}};
-    rw.var_names = {"a", "b"};
-    rw.rhs = [](const std::unordered_map<std::string, EClassId>& subst) {
-        // Just return the first operand (x + 0 -> x).
-        ENode n;
-        n.op = "var";
-        n.children = {subst.at("a")};
-        return n;
+    rw.lhs = Pattern::node("add", {Pattern::var("a"), Pattern::var("b")});
+    rw.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+        return subst.at("a");
     };
     g.saturate({rw}, 4);
 

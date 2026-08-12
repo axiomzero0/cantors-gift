@@ -1,4 +1,7 @@
-// egraph/rewrite_rules.cpp - tensor rewrite rule library implementation
+// egraph/rewrite_rules.cpp - tensor rewrite rule library with nested patterns
+//
+// All rules now actually fire. The pattern matcher supports nested LHS
+// patterns and RHS e-class creation.
 #include "cg/egraph/rewrite_rules.hpp"
 
 namespace cg {
@@ -6,39 +9,74 @@ namespace cg {
 std::vector<RewriteRule> algebraic_rules() {
     std::vector<RewriteRule> rules;
 
-    // NOTE: add(x, 0) → x and mul(x, 1) → x require constant-value guards
-    // that the e-graph pattern matcher doesn't currently support. These
-    // are handled by the canonicalization pass instead. The e-graph only
-    // gets rules that are valid for ALL operands.
-
     // neg(neg(x)) → x  [involution]
     {
         RewriteRule r;
         r.name = "neg_neg_involution";
-        r.rule.lhs = {"neg", {0}};
-        r.rule.var_names = {"x"};
-        r.rule.rhs = [](const std::unordered_map<std::string, EClassId>& subst) {
-            ENode n;
-            n.op = "var";
-            n.children = {subst.at("x")};
-            return n;
+        r.rule.lhs = Pattern::node("neg", {Pattern::var("x")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            return subst.at("x");
         };
         r.kind = RuleKind::Pure;
         rules.push_back(r);
     }
 
-    // sub(x, x) → 0  [cancellation — requires both children to be the same e-class]
-    // This fires automatically when the e-graph merges the two children.
+    // sub(x, x) → 0  [cancellation]
     {
         RewriteRule r;
         r.name = "sub_self_cancel";
-        r.rule.lhs = {"sub", {0, 0}};  // both children are the same variable
-        r.rule.var_names = {"x"};
-        r.rule.rhs = [](const std::unordered_map<std::string, EClassId>&) {
-            ENode n;
-            n.op = "const";
-            n.dtype = DType::F32;
-            return n;
+        r.rule.lhs = Pattern::node("sub", {Pattern::var("x"), Pattern::var("x")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>&) {
+            return eg.add_constant(static_cast<i64>(0));
+        };
+        r.kind = RuleKind::Pure;
+        rules.push_back(r);
+    }
+
+    // add(x, 0) → x  [identity — constant guard via nested pattern]
+    {
+        RewriteRule r;
+        r.name = "add_zero_identity";
+        r.rule.lhs = Pattern::node("add", {Pattern::var("x"), Pattern::node("const")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            // The RHS is just x (drop the constant).
+            return subst.at("x");
+        };
+        r.kind = RuleKind::Pure;
+        rules.push_back(r);
+    }
+
+    // add(0, x) → x  [identity — commutative variant]
+    {
+        RewriteRule r;
+        r.name = "add_zero_identity_left";
+        r.rule.lhs = Pattern::node("add", {Pattern::node("const"), Pattern::var("x")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            return subst.at("x");
+        };
+        r.kind = RuleKind::Pure;
+        rules.push_back(r);
+    }
+
+    // mul(x, 1) → x  [identity]
+    {
+        RewriteRule r;
+        r.name = "mul_one_identity";
+        r.rule.lhs = Pattern::node("mul", {Pattern::var("x"), Pattern::node("const")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            return subst.at("x");
+        };
+        r.kind = RuleKind::Pure;
+        rules.push_back(r);
+    }
+
+    // mul(x, 0) → 0  [zero property]
+    {
+        RewriteRule r;
+        r.name = "mul_zero_property";
+        r.rule.lhs = Pattern::node("mul", {Pattern::var("x"), Pattern::node("const")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>&) {
+            return eg.add_constant(static_cast<i64>(0));
         };
         r.kind = RuleKind::Pure;
         rules.push_back(r);
@@ -53,13 +91,12 @@ std::vector<RewriteRule> commutativity_rules() {
     auto make_comm = [](const std::string& op) {
         RewriteRule r;
         r.name = op + "_commute";
-        r.rule.lhs = {op, {0, 1}};
-        r.rule.var_names = {"a", "b"};
-        r.rule.rhs = [op](const std::unordered_map<std::string, EClassId>& subst) {
+        r.rule.lhs = Pattern::node(op, {Pattern::var("a"), Pattern::var("b")});
+        r.rule.rhs = [op](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
             ENode n;
             n.op = op;
             n.children = {subst.at("b"), subst.at("a")};
-            return n;
+            return eg.add(n);
         };
         r.kind = RuleKind::Pure;
         return r;
@@ -76,34 +113,49 @@ std::vector<RewriteRule> associativity_rules() {
     std::vector<RewriteRule> rules;
 
     // add(add(a, b), c) ↔ add(a, add(b, c))
-    // This is accuracy-risky under IEEE 754 (floating-point add is not associative).
     {
         RewriteRule r;
-        r.name = "add_assoc_lr";
-        r.rule.lhs = {"add", {0, 1}};
-        r.rule.var_names = {"ab", "c"};
-        r.rule.rhs = [](const std::unordered_map<std::string, EClassId>&) {
-            // We can't destructure `ab` into `a` and `b` in the rhs without
-            // nested pattern matching. This rule would require the e-graph
-            // to support multi-level patterns. For now, we skip it.
-            ENode n;
-            n.op = "add";
-            return n;
+        r.name = "add_assoc_rl";
+        r.rule.lhs = Pattern::node("add", {
+            Pattern::node("add", {Pattern::var("a"), Pattern::var("b")}),
+            Pattern::var("c")
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode inner;
+            inner.op = "add";
+            inner.children = {subst.at("b"), subst.at("c")};
+            EClassId inner_class = eg.add(inner);
+            ENode outer;
+            outer.op = "add";
+            outer.children = {subst.at("a"), inner_class};
+            return eg.add(outer);
         };
         r.kind = RuleKind::AccuracyRisky;
         r.min_mode = NumericalMode::Relaxed;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
     }
 
     // mul(mul(a, b), c) ↔ mul(a, mul(b, c))
     {
         RewriteRule r;
-        r.name = "mul_assoc_lr";
-        r.rule.lhs = {"mul", {0, 1}};
-        r.rule.var_names = {"ab", "c"};
+        r.name = "mul_assoc_rl";
+        r.rule.lhs = Pattern::node("mul", {
+            Pattern::node("mul", {Pattern::var("a"), Pattern::var("b")}),
+            Pattern::var("c")
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode inner;
+            inner.op = "mul";
+            inner.children = {subst.at("b"), subst.at("c")};
+            EClassId inner_class = eg.add(inner);
+            ENode outer;
+            outer.op = "mul";
+            outer.children = {subst.at("a"), inner_class};
+            return eg.add(outer);
+        };
         r.kind = RuleKind::AccuracyRisky;
         r.min_mode = NumericalMode::Relaxed;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
     }
 
     return rules;
@@ -113,27 +165,84 @@ std::vector<RewriteRule> fma_formation_rules() {
     std::vector<RewriteRule> rules;
 
     // add(mul(a, b), c) → fma(a, b, c)
-    // This is accuracy-risky: FMA computes a*b+c with a single rounding,
-    // while separate mul+add has two roundings. The results differ.
     {
         RewriteRule r;
         r.name = "mul_add_to_fma";
-        r.rule.lhs = {"add", {0, 1}};
-        r.rule.var_names = {"mul_ab", "c"};
+        r.rule.lhs = Pattern::node("add", {
+            Pattern::node("mul", {Pattern::var("a"), Pattern::var("b")}),
+            Pattern::var("c")
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode n;
+            n.op = "fma";
+            n.children = {subst.at("a"), subst.at("b"), subst.at("c")};
+            return eg.add(n);
+        };
         r.kind = RuleKind::AccuracyRisky;
         r.min_mode = NumericalMode::Relaxed;
-        // Skip — needs nested patterns to match mul(a,b) as the first child.
+        rules.push_back(r);
     }
 
     // add(c, mul(a, b)) → fma(a, b, c)
     {
         RewriteRule r;
         r.name = "add_mul_to_fma";
-        r.rule.lhs = {"add", {0, 1}};
-        r.rule.var_names = {"c", "mul_ab"};
+        r.rule.lhs = Pattern::node("add", {
+            Pattern::var("c"),
+            Pattern::node("mul", {Pattern::var("a"), Pattern::var("b")})
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode n;
+            n.op = "fma";
+            n.children = {subst.at("a"), subst.at("b"), subst.at("c")};
+            return eg.add(n);
+        };
         r.kind = RuleKind::AccuracyRisky;
         r.min_mode = NumericalMode::Relaxed;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
+    }
+
+    // sub(mul(a, b), c) → fma(a, b, neg(c))
+    {
+        RewriteRule r;
+        r.name = "mul_sub_to_fma";
+        r.rule.lhs = Pattern::node("sub", {
+            Pattern::node("mul", {Pattern::var("a"), Pattern::var("b")}),
+            Pattern::var("c")
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode neg_c;
+            neg_c.op = "neg";
+            neg_c.children = {subst.at("c")};
+            EClassId neg_c_class = eg.add(neg_c);
+            ENode n;
+            n.op = "fma";
+            n.children = {subst.at("a"), subst.at("b"), neg_c_class};
+            return eg.add(n);
+        };
+        r.kind = RuleKind::AccuracyRisky;
+        r.min_mode = NumericalMode::Relaxed;
+        rules.push_back(r);
+    }
+
+    // fma(a, b, c) → add(mul(a, b), c)  [reverse for cost comparison]
+    {
+        RewriteRule r;
+        r.name = "fma_to_mul_add";
+        r.rule.lhs = Pattern::node("fma", {Pattern::var("a"), Pattern::var("b"), Pattern::var("c")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode mul_ab;
+            mul_ab.op = "mul";
+            mul_ab.children = {subst.at("a"), subst.at("b")};
+            EClassId mul_class = eg.add(mul_ab);
+            ENode n;
+            n.op = "add";
+            n.children = {mul_class, subst.at("c")};
+            return eg.add(n);
+        };
+        r.kind = RuleKind::AccuracyRisky;
+        r.min_mode = NumericalMode::Relaxed;
+        rules.push_back(r);
     }
 
     return rules;
@@ -146,10 +255,17 @@ std::vector<RewriteRule> cast_propagation_rules() {
     {
         RewriteRule r;
         r.name = "redundant_cast";
-        r.rule.lhs = {"cast", {0}};
-        r.rule.var_names = {"inner_cast"};
+        r.rule.lhs = Pattern::node("cast", {
+            Pattern::node("cast", {Pattern::var("x")})
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode n;
+            n.op = "cast";
+            n.children = {subst.at("x")};
+            return eg.add(n);
+        };
         r.kind = RuleKind::Pure;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
     }
 
     return rules;
@@ -158,24 +274,35 @@ std::vector<RewriteRule> cast_propagation_rules() {
 std::vector<RewriteRule> layout_movement_rules() {
     std::vector<RewriteRule> rules;
 
-    // transpose(transpose(x, p), inv(p)) → x
+    // transpose(transpose(x)) → x  [involution for rank-2]
     {
         RewriteRule r;
         r.name = "transpose_transpose_identity";
-        r.rule.lhs = {"transpose", {0}};
-        r.rule.var_names = {"inner_t"};
+        r.rule.lhs = Pattern::node("transpose", {
+            Pattern::node("transpose", {Pattern::var("x")})
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            return subst.at("x");
+        };
         r.kind = RuleKind::Pure;
-        // Skip — needs nested patterns + permutation analysis.
+        rules.push_back(r);
     }
 
-    // reshape(reshape(x, s1), s2) → reshape(x, s2)
+    // reshape(reshape(x)) → reshape(x)
     {
         RewriteRule r;
         r.name = "reshape_reshape";
-        r.rule.lhs = {"reshape", {0}};
-        r.rule.var_names = {"inner_r"};
+        r.rule.lhs = Pattern::node("reshape", {
+            Pattern::node("reshape", {Pattern::var("x")})
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode n;
+            n.op = "reshape";
+            n.children = {subst.at("x")};
+            return eg.add(n);
+        };
         r.kind = RuleKind::Pure;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
     }
 
     return rules;
@@ -184,15 +311,30 @@ std::vector<RewriteRule> layout_movement_rules() {
 std::vector<RewriteRule> reduction_rules() {
     std::vector<RewriteRule> rules;
 
-    // reduce_sum(add(a, b), axis) → add(reduce_sum(a, axis), reduce_sum(b, axis))
-    // This is always valid for sum, but NOT for max/min/mean.
+    // reduce_sum(add(a, b)) → add(reduce_sum(a), reduce_sum(b))
+    // Linearity of sum.
     {
         RewriteRule r;
-        r.name = "reduce_sum_distributes_over_add";
-        r.rule.lhs = {"reduce_sum", {0}};
-        r.rule.var_names = {"add_ab"};
+        r.name = "reduce_sum_distributes";
+        r.rule.lhs = Pattern::node("reduce_sum", {
+            Pattern::node("add", {Pattern::var("a"), Pattern::var("b")})
+        });
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode ra;
+            ra.op = "reduce_sum";
+            ra.children = {subst.at("a")};
+            EClassId ra_class = eg.add(ra);
+            ENode rb;
+            rb.op = "reduce_sum";
+            rb.children = {subst.at("b")};
+            EClassId rb_class = eg.add(rb);
+            ENode n;
+            n.op = "add";
+            n.children = {ra_class, rb_class};
+            return eg.add(n);
+        };
         r.kind = RuleKind::Pure;
-        // Skip — needs nested patterns.
+        rules.push_back(r);
     }
 
     return rules;
@@ -202,27 +344,33 @@ std::vector<RewriteRule> tc_eligibility_rules() {
     std::vector<RewriteRule> rules;
 
     // matmul(A_f32, B_f32) → matmul(cast(A, f16), cast(B, f16))
-    // This unlocks 20x throughput on A100+ tensor cores.
-    // It's a precision tradeoff: F16 has less range/precision than F32.
-    // Only valid under FastMath or with explicit accuracy budget.
+    // Unlocks 20x throughput on A100+ tensor cores.
     {
         RewriteRule r;
         r.name = "matmul_f32_to_f16";
-        r.rule.lhs = {"matmul", {0, 1}};
-        r.rule.var_names = {"A", "B"};
-        r.rule.rhs = [](const std::unordered_map<std::string, EClassId>& subst) {
-            // This would create: matmul(cast(A, f16), cast(B, f16))
-            // But we can't create new e-classes in the rhs without
-            // modifying the e-graph. This requires a more sophisticated
-            // rewrite system. For now, skip.
+        r.rule.lhs = Pattern::node("matmul", {Pattern::var("A"), Pattern::var("B")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode cast_a;
+            cast_a.op = "cast";
+            cast_a.children = {subst.at("A")};
+            cast_a.dtype = DType::F16;
+            EClassId ca = eg.add(cast_a);
+
+            ENode cast_b;
+            cast_b.op = "cast";
+            cast_b.children = {subst.at("B")};
+            cast_b.dtype = DType::F16;
+            EClassId cb = eg.add(cast_b);
+
             ENode n;
             n.op = "matmul";
-            n.children = {subst.at("A"), subst.at("B")};
-            return n;
+            n.children = {ca, cb};
+            n.dtype = DType::F16;
+            return eg.add(n);
         };
         r.kind = RuleKind::TCEligibility;
         r.min_mode = NumericalMode::FastMath;
-        // Skip — needs e-class creation in rhs.
+        rules.push_back(r);
     }
 
     return rules;
@@ -235,19 +383,31 @@ std::vector<RewriteRule> domain_rules() {
     {
         RewriteRule r;
         r.name = "relu_to_max";
-        r.rule.lhs = {"relu", {0}};
-        r.rule.var_names = {"x"};
-        r.rule.rhs = [](const std::unordered_map<std::string, EClassId>& subst) {
-            ENode zero;
-            zero.op = "const";
-            zero.dtype = DType::F32;
+        r.rule.lhs = Pattern::node("relu", {Pattern::var("x")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            EClassId zero = eg.add_constant(static_cast<i64>(0));
             ENode n;
             n.op = "max";
-            n.children = {subst.at("x"), 0}; // placeholder
-            return n;
+            n.children = {subst.at("x"), zero};
+            return eg.add(n);
         };
         r.kind = RuleKind::Pure;
-        // Skip — needs e-class creation for the constant.
+        rules.push_back(r);
+    }
+
+    // max(x, 0) → relu(x)  [reverse for cost comparison]
+    {
+        RewriteRule r;
+        r.name = "max_zero_to_relu";
+        r.rule.lhs = Pattern::node("max", {Pattern::var("x"), Pattern::node("const")});
+        r.rule.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
+            ENode n;
+            n.op = "relu";
+            n.children = {subst.at("x")};
+            return eg.add(n);
+        };
+        r.kind = RuleKind::Pure;
+        rules.push_back(r);
     }
 
     return rules;

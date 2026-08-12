@@ -1,113 +1,167 @@
-// egraph/egraph.cpp - implementation
+// egraph/egraph.cpp - implementation with nested pattern matching
 #include "cg/egraph/egraph.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
-#include <queue>
 
 namespace cg {
 
-namespace {
-
-// Substitute child e-class ids in `n` according to `subst`.
-ENode substitute(const ENode& n, const std::unordered_map<EClassId, EClassId>& subst) {
-    ENode out = n;
-    for (auto& c : out.children) {
-        auto it = subst.find(c);
-        if (it != subst.end()) c = it->second;
-    }
-    return out;
-}
-
-} // namespace
-
 EClassId EGraph::add(const ENode& n) {
-    u64 h = node_hash(n);
+    // Canonicalize children to their root classes.
+    ENode canonical = n;
+    for (auto& c : canonical.children) c = find(c);
+
+    u64 h = node_hash(canonical);
     auto it = hashcons_.find(h);
     if (it != hashcons_.end()) return find(it->second);
 
     EClassId id = static_cast<EClassId>(classes_.size());
     EClass c;
-    c.nodes.push_back(n);
+    c.nodes.push_back(canonical);
     c.parent = id;
     classes_.push_back(std::move(c));
     hashcons_[h] = id;
     return id;
 }
 
+EClassId EGraph::add_constant(i64 value, DType dt) {
+    ENode n;
+    n.op = "const";
+    n.dtype = dt;
+    // Store the value in the shape field as a hack (we don't have a value field).
+    n.shape = std::vector<i64>{value};
+    return add(n);
+}
+
+EClassId EGraph::add_constant(double value, DType dt) {
+    // Store float as bits in an i64.
+    i64 bits;
+    std::memcpy(&bits, &value, 8);
+    return add_constant(bits, dt);
+}
+
 void EGraph::merge(EClassId a, EClassId b) {
     EClassId ra = find(a), rb = find(b);
     if (ra == rb) return;
-    // Union by rank.
     if (classes_[ra].rank < classes_[rb].rank) std::swap(ra, rb);
     classes_[rb].parent = ra;
     if (classes_[ra].rank == classes_[rb].rank) classes_[ra].rank++;
-    // Move nodes from rb into ra.
     for (auto& n : classes_[rb].nodes) classes_[ra].nodes.push_back(std::move(n));
     classes_[rb].nodes.clear();
+}
+
+bool EGraph::match(const Pattern& pattern, EClassId class_id,
+                    std::unordered_map<std::string, EClassId>& subst) const {
+    EClassId root = find_const(class_id);
+
+    if (pattern.is_variable) {
+        // Variable: bind to the root class. If already bound, check consistency.
+        auto it = subst.find(pattern.var_name);
+        if (it != subst.end()) {
+            return find_const(it->second) == root;
+        }
+        subst[pattern.var_name] = root;
+        return true;
+    }
+
+    // Node pattern: try to match against each e-node in the class.
+    if (root >= classes_.size()) return false;
+    for (const auto& n : classes_[root].nodes) {
+        if (n.op != pattern.op) continue;
+        if (n.children.size() != pattern.children.size()) continue;
+
+        // Save subst so we can backtrack on failure.
+        auto saved = subst;
+        bool ok = true;
+        for (usize i = 0; i < pattern.children.size(); ++i) {
+            if (!match(pattern.children[i], n.children[i], subst)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return true;
+        subst = saved;  // backtrack
+    }
+    return false;
+}
+
+void EGraph::rebuild() {
+    // Rehash all e-nodes after merges to discover new congruences.
+    // This is the "rebuild" step from egg/egglog.
+    hashcons_.clear();
+    for (EClassId cid = 0; cid < classes_.size(); ++cid) {
+        EClassId root = find(cid);
+        for (const auto& n : classes_[cid].nodes) {
+            ENode canonical = n;
+            for (auto& c : canonical.children) c = find(c);
+            u64 h = node_hash(canonical);
+            auto it = hashcons_.find(h);
+            if (it != hashcons_.end()) {
+                // Congruence found! Merge.
+                EClassId existing = find(it->second);
+                if (existing != root) {
+                    merge(existing, root);
+                }
+            } else {
+                hashcons_[h] = root;
+            }
+        }
+    }
 }
 
 void EGraph::saturate(const std::vector<Rewrite>& rewrites, usize max_iters) {
     for (usize iter = 0; iter < max_iters; ++iter) {
         bool changed = false;
-        // For each class, attempt to match each rewrite.
+
+        // Collect all (class_id, node) pairs to try matching against.
+        // We snapshot because matching + adding can modify the e-graph.
+        struct MatchTarget {
+            EClassId class_id;
+            ENode node;
+        };
+        std::vector<MatchTarget> targets;
         for (EClassId cid = 0; cid < classes_.size(); ++cid) {
-            if (classes_[cid].nodes.empty()) continue;
+            EClassId root = find(cid);
+            if (root != cid) continue;  // skip non-root classes
+            for (const auto& n : classes_[root].nodes) {
+                targets.push_back({root, n});
+            }
+        }
+
+        for (const auto& [class_id, node] : targets) {
             for (const auto& rw : rewrites) {
-                // Match rw.lhs against each node in this class.
-                for (const auto& n : classes_[cid].nodes) {
-                    if (n.op != rw.lhs.op) continue;
-                    if (n.children.size() != rw.lhs.children.size()) continue;
-                    // Build substitution: rw.lhs.children[i] is a "variable"
-                    // named by rw.var_names[i]; n.children[i] is the concrete
-                    // class id (after find()).
-                    std::unordered_map<std::string, EClassId> subst;
-                    bool ok = true;
-                    for (usize i = 0; i < n.children.size(); ++i) {
-                        if (i < rw.var_names.size()) {
-                            subst[rw.var_names[i]] = find(n.children[i]);
-                        } else {
-                            // No variable for this slot; require structural match.
-                            if (rw.lhs.children[i] != n.children[i]) { ok = false; break; }
-                        }
-                    }
-                    if (!ok) continue;
-                    // Apply the rhs to build a new node.
-                    ENode rhs = rw.rhs(subst);
-                    EClassId rhs_class = add(rhs);
-                    EClassId lhs_class = find(cid);
-                    if (rhs_class != lhs_class) {
-                        merge(lhs_class, rhs_class);
-                        changed = true;
-                    }
+                std::unordered_map<std::string, EClassId> subst;
+                if (!match(rw.lhs, class_id, subst)) continue;
+
+                // Apply the RHS to create/lookup an e-class.
+                EClassId rhs_class = rw.rhs(*this, subst);
+                EClassId lhs_root = find(class_id);
+                if (rhs_class != lhs_root) {
+                    merge(lhs_root, rhs_class);
+                    changed = true;
                 }
             }
         }
+
+        // Rebuild after all merges to discover congruences.
+        if (changed) {
+            rebuild();
+        }
+
         if (!changed) break;
     }
 }
 
 EGraph::ExtractedExpr
 EGraph::extract(EClassId c, std::function<double(const ENode&)> cost_fn) const {
-    // Greedy extraction: for each class, pick the cheapest node, recursing
-    // into children.
     std::unordered_map<EClassId, ExtractedExpr> memo;
 
     std::function<ExtractedExpr(EClassId)> rec = [&](EClassId id) -> ExtractedExpr {
-        // Find the root class for `id` without path compression (const method).
-        EClassId root = id;
-        std::unordered_set<EClassId> visited;
-        while (classes_[root].parent != root) {
-            if (!visited.insert(root).second) {
-                // Cycle detected (shouldn't happen); break.
-                break;
-            }
-            root = classes_[root].parent;
-        }
+        EClassId root = find_const(id);
         auto it = memo.find(root);
         if (it != memo.end()) return it->second;
 
-        // Mark as in-progress to avoid infinite recursion on cycles.
         memo[root] = ExtractedExpr{{}, 0.0};
 
         ExtractedExpr best{{}, std::numeric_limits<double>::infinity()};

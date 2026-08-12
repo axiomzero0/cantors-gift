@@ -31,13 +31,12 @@ TEST(EGraph, RewriteCommutative) {
     auto sum = g.add({"add", {a, b}});
 
     EGraph::Rewrite rw;
-    rw.lhs = {"add", {0, 1}};
-    rw.var_names = {"x", "y"};
-    rw.rhs = [](const std::unordered_map<std::string, EClassId>& subst) {
+    rw.lhs = Pattern::node("add", {Pattern::var("x"), Pattern::var("y")});
+    rw.rhs = [](EGraph& eg, const std::unordered_map<std::string, EClassId>& subst) {
         ENode n;
         n.op = "add";
         n.children = {subst.at("y"), subst.at("x")};
-        return n;
+        return eg.add(n);
     };
 
     g.saturate({rw}, 4);
