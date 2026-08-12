@@ -75,55 +75,82 @@ library handles the rest.
 
 ## Status
 
-This is the second foundational commit. The following subsystems are implemented and
-unit-tested:
+This is the third foundational commit. The compiler now has real backends
+that produce actual machine code, an e-graph superoptimizer wired into the
+pipeline, and a Bayesian autotuner.
 
-- **Core IR**: `Type`, `TensorType`, `Value`, `Operation`, `Block`, `Module`,
-  `Builder`, textual `Printer`.
-- **Shape system**: symbolic `DimExpr` DAG, `ConstraintSet`, constraint
-  `Solver`, expression `Simplifier`, shape inference.
-- **Layout system**: `Layout` as a composable index→address function,
-  `StridedLayout`, layout equivalence, layout analysis.
-- **Effects & Traits**: pure / side-effecting classification, commutative /
-  associative / elementwise / reduction traits.
-- **Analysis framework**: `AnalysisManager` with caching and automatic
-  invalidation via `PreservedAnalyses`.
-- **Pass infrastructure**: `Pass`, `PassManager`, `Pipeline`.
-- **Optimization passes**: Canonicalize, CSE, ConstantFolding, DCE,
-  AlgebraicSimplification, SCCP, Fusion (with profitability model),
-  ShapeOptimization, LayoutOptimization, ReductionOptimization,
-  CopyElimination, MemoryPlanning, Specialization.
-- **Global Tensor Analysis (GTA)**: DataflowAnalysis (use-def, def-use,
-  critical path, fanout), LifetimeAnalysis, ArithmeticIntensityAnalysis
-  (memory/compute/launch/latency bound classification),
-  ParallelismAnalysis, ReuseAnalysis (materialize vs recompute),
-  GlobalAliasAnalysis (view-of, slice-of, broadcast-of),
-  GlobalCostAnalysis (decomposed: execution + memory + launch + sync +
-  specialization + code-size), GlobalAnalysisManager facade.
-- **Global Barrier**: legality check, schedule validation, final decision
-  recording (fusion clusters, reused buffers, specializations).
-- **Iterative optimization driver**: runs all passes in phases with
-  analysis feedback between phases, bounded iteration count, converges to
-  fixpoint, then crosses the Global Barrier.
-- **Schedule IR**: `IterationDomain`, `Schedule`, schedule transformations
-  (split, tile, interchange, vectorize, parallelize, cache), `ScheduleSpace`.
-- **Cost model**: `HardwareModel`, analytical `CostEstimator`, `HardwareProfile`
-  (optimizer-facing, decoupled from backend).
-- **Codegen IR**: vector loads/stores, FMA, reductions, barriers, async copies.
-- **Backend interface**: `MachineBackend`, `TargetInfo`, `MachineEmitter`.
-- **Runtime interface**: `Executable`, `Device`, `Stream`, `Allocator`,
-  `KernelCache`.
-- **E-graph core**: `ENode`, `EClass`, `EGraph`, rewrites, tensor-aware
-  extraction.
-- **Standard ops**: `add`, `sub`, `mul`, `div`, `neg`, `matmul`, `relu`,
-  `gelu`, `sigmoid`, `tanh`, `exp`, `log`, `sqrt`, `broadcast`, `reshape`,
-  `transpose`, `reduce_sum/max/mean`, `cast`, `copy`, `gather`, `scatter`,
-  `concat`, `slice`, `softmax`, `layernorm`, `batchnorm`, `conv2d`,
-  `constant`, `input`, `output`, `return`, `alloc`, `free`, plus attributes for
-  layouts, dtypes, and effects.
+### Backends (real code generation)
 
-The CPU/CUDA/AMD backends are intentionally interface-only at this stage; the
-optimization stack above them is fully real and exercised by the test suite.
+- **PTX emitter**: generates valid NVIDIA PTX text from Codegen IR
+  (register declarations, vector loads/stores, FMA, barriers, thread
+  index intrinsics, predicated execution). The NVIDIA driver compiles
+  PTX → SASS.
+- **x86-64 emitter**: produces real machine code bytes (REX prefixes,
+  ModR/M, SIB, 3-byte VEX prefixes for AVX/AVX2). Supports MOV, ADD,
+  SUB, IMUL, XOR, PUSH/POP, RET, VMOVAPS, VADDPS, VMULPS, VFMADD231PS,
+  MFENCE. The output is a `std::vector<u8>` that can be cast to a
+  function pointer and called.
+- **NvidiaBackend**: compiles a CGModule to an Executable containing PTX text.
+- **CpuBackend**: compiles a CGModule to an Executable containing raw x86-64
+  machine code bytes + a hex disassembly.
+- **Lowering pass**: Codegen IR → PTX text or x86-64 bytes.
+
+### Optimization passes (14)
+
+Canonicalize, CSE, ConstantFolding, DCE, AlgebraicSimplification, SCCP,
+EGraphSuperoptimizer, Fusion (with profitability model),
+ShapeOptimization, LayoutOptimization, ReductionOptimization,
+CopyElimination, MemoryPlanning (with real alloc/free insertion),
+Specialization.
+
+### Global Tensor Analysis (GTA)
+
+DataflowAnalysis, ShapeAnalysis, LayoutAnalysis, LifetimeAnalysis,
+ArithmeticIntensityAnalysis (memory/compute/launch/latency bound
+classification), ParallelismAnalysis, ReuseAnalysis (materialize vs
+recompute), GlobalAliasAnalysis (view-of/slice-of/broadcast-of),
+GlobalCostAnalysis (decomposed: execution + memory + launch + sync +
+specialization + code-size), GlobalAnalysisManager facade.
+
+### Global Barrier + Iterative Driver
+
+Global Barrier (legality check + schedule validation + final decisions)
++ IterativeDriver (7-phase pipeline with analysis feedback, bounded
+iteration, converges to fixpoint, then crosses the barrier).
+
+### Autotuner
+
+Bayesian optimization over ScheduleSpace:
+- Gaussian Process with squared-exponential (RBF) kernel
+- Expected Improvement acquisition function
+- Schedule feature extraction (tile sizes, vector width, unroll factor,
+  parallelism, shared memory, tensor core usage)
+- Random initial exploration + GP-guided exploitation
+- Converges to near-optimal schedule with bounded benchmark count
+
+### Schedule IR, Cost model, Codegen IR, Backend interface, Runtime
+
+(Same as before — Schedule IR with transformations, HardwareModel +
+analytical CostEstimator + HardwareProfile, Codegen IR with vector
+ops/barriers/async copies, MachineBackend/TargetInfo/MachineEmitter,
+Runtime with Device/Stream/Allocator/KernelCache.)
+
+### E-graph core + superoptimizer
+
+ENode/EClass/EGraph with merge/saturate, tensor-aware extraction, and a
+superoptimizer pass that extracts pure sub-DAGs, saturates with tensor
+rewrite rules (commutativity, identity, associativity), and extracts the
+cheapest form.
+
+### Standard ops
+
+`add`, `sub`, `mul`, `div`, `neg`, `matmul`, `relu`, `gelu`, `sigmoid`,
+`tanh`, `exp`, `log`, `sqrt`, `broadcast`, `reshape`, `transpose`,
+`reduce_sum/max/mean`, `cast`, `copy`, `gather`, `scatter`, `concat`,
+`slice`, `softmax`, `layernorm`, `batchnorm`, `conv2d`, `constant`,
+`input`, `output`, `return`, `alloc`, `free`.
+
+97 unit tests across 14 test executables; all passing.
 
 ## Building
 

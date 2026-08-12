@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -180,3 +181,16 @@ void assert_ge(const char* file, int line, const char* a_expr, const char* b_exp
 
 #define SUCCEED() ((void)0)
 #define FAIL()    (::cg_test::assert_true(__FILE__, __LINE__, "FAIL()", false))
+
+#define EXPECT_NEAR(a, b, abs_err) do { \
+    double _va = static_cast<double>(a); \
+    double _vb = static_cast<double>(b); \
+    double _diff = std::fabs(_va - _vb); \
+    if (_diff > static_cast<double>(abs_err)) { \
+        std::ostringstream _os; \
+        _os << __FILE__ << ":" << __LINE__ << ": EXPECT_NEAR(" << #a << ", " << #b \
+            << ", " << #abs_err << ") failed: |" << _va << " - " << _vb \
+            << "| = " << _diff << " > " << abs_err; \
+        throw ::cg_test::Failure(_os.str()); \
+    } \
+} while(0)

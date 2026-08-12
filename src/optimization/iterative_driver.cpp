@@ -6,6 +6,7 @@
 #include "cg/optimization/const_fold/sccp.hpp"
 #include "cg/optimization/dce/dce.hpp"
 #include "cg/optimization/cse/cse.hpp"
+#include "cg/optimization/egraph/egraph_superoptimizer.hpp"
 #include "cg/optimization/fusion/fusion.hpp"
 #include "cg/optimization/layout/layout_opt.hpp"
 #include "cg/optimization/memory/copy_elimination.hpp"
@@ -53,7 +54,16 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 3: fusion.
+        // Phase 3: e-graph superoptimizer (runs before fusion so fusion
+        // sees the algebraically simplified IR).
+        {
+            PassManager pm;
+            pm.add(std::make_unique<EGraphSuperoptimizerPass>());
+            pm.add(std::make_unique<DCEPass>());
+            pm.run(m, am_);
+        }
+
+        // Phase 4: fusion.
         {
             PassManager pm;
             pm.add(std::make_unique<FusionPass>());
@@ -61,14 +71,14 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 4: reduction optimization.
+        // Phase 5: reduction optimization.
         {
             PassManager pm;
             pm.add(std::make_unique<ReductionOptimizationPass>());
             pm.run(m, am_);
         }
 
-        // Phase 5: copy elimination + memory planning.
+        // Phase 6: copy elimination + memory planning.
         {
             PassManager pm;
             pm.add(std::make_unique<CopyEliminationPass>());
@@ -76,7 +86,7 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 6: specialization.
+        // Phase 7: specialization.
         {
             PassManager pm;
             pm.add(std::make_unique<SpecializationPass>());

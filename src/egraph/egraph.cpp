@@ -94,12 +94,21 @@ EGraph::extract(EClassId c, std::function<double(const ENode&)> cost_fn) const {
     std::unordered_map<EClassId, ExtractedExpr> memo;
 
     std::function<ExtractedExpr(EClassId)> rec = [&](EClassId id) -> ExtractedExpr {
-        // Find the root class for `id`.
-        // (We can't call find() because this is a const method.)
+        // Find the root class for `id` without path compression (const method).
         EClassId root = id;
-        while (classes_[root].parent != root) root = classes_[root].parent;
+        std::unordered_set<EClassId> visited;
+        while (classes_[root].parent != root) {
+            if (!visited.insert(root).second) {
+                // Cycle detected (shouldn't happen); break.
+                break;
+            }
+            root = classes_[root].parent;
+        }
         auto it = memo.find(root);
         if (it != memo.end()) return it->second;
+
+        // Mark as in-progress to avoid infinite recursion on cycles.
+        memo[root] = ExtractedExpr{{}, 0.0};
 
         ExtractedExpr best{{}, std::numeric_limits<double>::infinity()};
         for (const auto& n : classes_[root].nodes) {
