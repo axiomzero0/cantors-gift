@@ -9,23 +9,19 @@ namespace cg {
 u32 AnalyticalCostModelV2::estimate_warps_per_sm(
     u32 regs_per_thread, u32 shared_mem_per_block,
     u32 threads_per_block) const {
-    // GPU occupancy is limited by three resources:
-    //   1. Register file: SM has a fixed register file (e.g., 65536 on A100).
-    //      Max warps = register_file / (regs_per_thread * 32).
-    //   2. Shared memory: Max blocks = shared_mem_per_sm / shared_mem_per_block.
-    //      Max warps = max_blocks * (threads_per_block / warp_size).
-    //   3. Max warps per SM (hardware limit, e.g., 64 on A100).
-
-    u32 warp_size = 32;
+    // GPU occupancy is limited by three resources.
+    // All parameters come from HardwareModel — no hardcoded constants.
+    u32 warp_size = hw_.warp_size;
+    if (warp_size == 0) warp_size = 1;
     u32 regs_per_warp = regs_per_thread * warp_size;
-    u32 register_file = 65536; // A100 default
+    u32 register_file = hw_.register_file_per_sm;
     u32 max_warps_regs = register_file / std::max(1u, regs_per_warp);
 
     u32 shared_mem_per_sm = static_cast<u32>(hw_.shared_mem_bytes);
     u32 max_blocks_smem = shared_mem_per_sm / std::max(1u, shared_mem_per_block);
     u32 max_warps_smem = max_blocks_smem * (threads_per_block / warp_size);
 
-    u32 max_warps_hw = 64; // A100: 64 warps/SM max
+    u32 max_warps_hw = hw_.max_warps_per_sm;
 
     return std::min({max_warps_regs, max_warps_smem, max_warps_hw});
 }
@@ -104,14 +100,22 @@ AnalyticalCostModelV2::estimate(const CostFeatures& f) const {
     u32 warps_per_sm = estimate_warps_per_sm(
         f.registers_per_thread, f.shared_mem_per_block, f.threads_per_block);
     out.estimated_warps_per_sm = warps_per_sm;
-    u32 max_warps = 64; // A100
+    u32 max_warps = hw_.max_warps_per_sm;
+    if (max_warps == 0) max_warps = 1;
     out.estimated_occupancy_pct = (warps_per_sm * 100) / max_warps;
 
     // Low occupancy → can't hide latency → stall
-    // If occupancy < 25%, add stall proportional to (1 - occupancy)
-    if (out.estimated_occupancy_pct < 50) {
-        double occupancy_factor = static_cast<double>(out.estimated_occupancy_pct) / 100.0;
-        out.stall_sec = out.overlapped_sec * (1.0 - occupancy_factor) * 0.5;
+    // Stall proportional to occupancy drop, scaled by hardware stall_cycles.
+    u32 occupancy_threshold = max_warps / 2;
+    if (out.estimated_warps_per_sm < occupancy_threshold) {
+        double occupancy_factor = max_warps > 0
+            ? static_cast<double>(out.estimated_warps_per_sm) / max_warps
+            : 0.0;
+        // stall_factor from hw.stall_cycles_per_warp (normalized)
+        double stall_factor = hw_.stall_cycles_per_warp > 0
+            ? hw_.stall_cycles_per_warp / 4.0
+            : 0.25;  // fallback if not set
+        out.stall_sec = out.overlapped_sec * (1.0 - occupancy_factor) * stall_factor;
     }
 
     // 6. Wave quantization
@@ -187,7 +191,7 @@ CostFeatures AnalyticalCostModelV2::extract_features(
     f.registers_per_thread = f.uses_tensor_core ? 40 : 32;
 
     // Threads per block
-    f.threads_per_block = 256; // 8 warps
+    f.threads_per_block = hw_.warp_size * 8;  // 8 warps per block
 
     // L2 hit rate for B tensor (rough estimate)
     // B is [K, N], each element is reused M/m_tile times.
@@ -233,7 +237,7 @@ void LearnedCostModel::train(
         };
     };
 
-    double lr = 0.001;
+    double lr = 1.0 / std::max<usize>(1, n);  // adaptive learning rate
     for (int iter = 0; iter < 1000; ++iter) {
         std::vector<double> grads(num_features, 0.0);
         double bias_grad = 0;

@@ -511,7 +511,19 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def("transpose", &Builder::transpose)
         .def("reduce_sum", &Builder::reduce_sum)
         .def("reduce_max", &Builder::reduce_max)
-        .def("cast", &Builder::cast);
+        .def("cast", &Builder::cast)
+        .def("conv2d", &Builder::conv2d)
+        .def("softmax", &Builder::softmax)
+        .def("layernorm", &Builder::layernorm)
+        .def("batchnorm", &Builder::batchnorm)
+        .def("gather", &Builder::gather)
+        .def("concat", [](Builder& b, std::vector<Value> inputs, i64 axis) {
+            return b.concat(std::move(inputs), axis);
+        })
+        .def("slice", &Builder::slice)
+        .def("sigmoid", &Builder::sigmoid)
+        .def("tanh", &Builder::tanh)
+        .def("log", &Builder::log);
 
     // ===================================================================
     // Printer

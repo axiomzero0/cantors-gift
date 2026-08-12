@@ -174,7 +174,9 @@ FusionProfitability compute_fusion_profitability(
     // But if the producer has multiple consumers and we Materialize instead,
     // subsequent reads hit L2 cache (model this).
     double global_bw = hw.memory.get(MemorySpace::Generic);
-    if (global_bw <= 0) global_bw = 50e9;
+    if (global_bw <= 0) global_bw = hw.compute.get(DType::F32) > 0
+        ? hw.compute.get(DType::F32) / 100.0  // fallback: assume ridge ~100
+        : 1e9;
 
     // Estimate L2 hit rate for the consumer's read of producer's output.
     // If the data fits in L2, the read is much cheaper.
@@ -199,10 +201,11 @@ FusionProfitability compute_fusion_profitability(
     if (is_elementwise(consumer.opcode)) regs_per_thread += 8;
 
     // Estimate occupancy with and without fusion.
+    u32 threads_per_block = hw.warp_size * 8;
     u32 warps_without = hw.estimate_warps_per_sm(
-        hw.base_regs_per_thread, 0, 256);
+        hw.base_regs_per_thread, 0, threads_per_block);
     u32 warps_with = hw.estimate_warps_per_sm(
-        regs_per_thread, 0, 256);
+        regs_per_thread, 0, threads_per_block);
 
     // Occupancy penalty: if fusion reduces warps_per_sm, we lose
     // latency-hiding ability. The penalty is proportional to the
@@ -227,9 +230,12 @@ FusionProfitability compute_fusion_profitability(
     if (pp.independent_items > cp.independent_items && cp.independent_items > 0) {
         double ratio = static_cast<double>(pp.independent_items) /
                        static_cast<double>(cp.independent_items);
-        // Penalty is proportional to the parallelism loss, capped at 10x.
+        // Penalty proportional to parallelism loss, scaled by stall_cycles.
+        double parallelism_factor = hw.stall_cycles_per_warp > 0
+            ? hw.stall_cycles_per_warp / 40.0  // normalize: 4 cycles -> 0.1
+            : 0.1;
         fp.parallelism_penalty_sec = (fp.memory_saved_sec + fp.launch_saved_sec) *
-                                      0.1 * std::min(ratio, 10.0);
+                                      parallelism_factor * std::min(ratio, 10.0);
     }
 
     // 5. Total delta
