@@ -71,6 +71,7 @@
 #include "cg/analysis/unified/fact_store.hpp"
 #include "cg/analysis/unified/tensor_facts.hpp"
 #include "cg/analysis/unified/unified_analyzer.hpp"
+#include "cg/engine/compile_api.hpp"
 #include "cg/optimization/unified/unified_passes.hpp"
 #include "cg/optimization/memory/memory_planning.hpp"
 #include "cg/optimization/reduction/reduction_opt.hpp"
@@ -1393,6 +1394,50 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def_readonly("fusion", &UnifiedOptimizationPipeline::Stats::fusion)
         .def_readonly("layout", &UnifiedOptimizationPipeline::Stats::layout)
         .def_readonly("alias", &UnifiedOptimizationPipeline::Stats::alias);
+
+    // ===================================================================
+    // Clean compile API — the user-facing entry point.
+    //
+    //   task = cg.CompileTask(kind="matmul_bias_relu", M=1024, K=1024, N=1024)
+    //   result = cg.compile(task, print_ir=True)
+    //   print(result.ir_text)
+    //   print(result.predicted_runtime_sec)
+    // ===================================================================
+    py::class_<CompileTask>(m, "CompileTask")
+        .def(py::init<>())
+        .def_readwrite("kind", &CompileTask::kind)
+        .def_readwrite("M", &CompileTask::M)
+        .def_readwrite("K", &CompileTask::K)
+        .def_readwrite("N", &CompileTask::N)
+        .def_readwrite("chain_depth", &CompileTask::chain_depth)
+        .def_readwrite("dtype", &CompileTask::dtype)
+        .def_readwrite("numerical_mode", &CompileTask::numerical_mode)
+        .def_readwrite("hardware", &CompileTask::hardware)
+        .def_readwrite("opt_level", &CompileTask::opt_level);
+
+    py::class_<CompileResult>(m, "CompileResultV2")
+        .def_readonly("ir_text", &CompileResult::ir_text)
+        .def_readonly("ir_text_before", &CompileResult::ir_text_before)
+        .def_readonly("predicted_runtime_sec", &CompileResult::predicted_runtime_sec)
+        .def_readonly("ops_before", &CompileResult::ops_before)
+        .def_readonly("ops_after", &CompileResult::ops_after)
+        .def_readonly("converged", &CompileResult::converged)
+        .def_readonly("iterations", &CompileResult::iterations)
+        .def_readonly("pass_stats", &CompileResult::pass_stats)
+        .def_readonly("analyzer_runs", &CompileResult::analyzer_runs)
+        .def_readonly("analyzer_latency_sec", &CompileResult::analyzer_latency_sec)
+        .def_readonly("facts_discovered", &CompileResult::facts_discovered)
+        .def_readonly("graph_intensity", &CompileResult::graph_intensity)
+        .def_readonly("effective_intensity", &CompileResult::effective_intensity)
+        .def_readonly("roofline_ridge", &CompileResult::roofline_ridge)
+        .def_readonly("sm_utilization_pct", &CompileResult::sm_utilization_pct)
+        .def_readonly("num_blocks", &CompileResult::num_blocks)
+        .def_readonly("num_waves", &CompileResult::num_waves)
+        .def_readonly("error", &CompileResult::error);
+
+    m.def("compile", [](const CompileTask& task, bool print_ir) {
+        return compile(task, print_ir);
+    }, py::arg("task"), py::arg("print_ir") = false);
 
     // ===================================================================
     // Runtime

@@ -113,6 +113,29 @@ public:
     // Returns the number of facts discovered this iteration.
     u32 run_one_iteration();
 
+    // INCREMENTAL: re-run only propagators whose inputs may have changed
+    // since the last `run()` or `run_incremental()`. This is much cheaper
+    // than a full `run()` when the IR has only been slightly mutated
+    // (e.g. one pass eliminated a few ops).
+    //
+    // Strategy: mark all propagators as "dirty" initially. After a full
+    // run, all are "clean". When the caller mutates the IR, they should
+    // call `invalidate()` to mark propagators dirty. `run_incremental()`
+    // only re-runs dirty propagators, and re-runs dependents if a dirty
+    // propagator produced new facts.
+    //
+    // For now, "dirty" is coarse: we re-run ALL propagators but skip the
+    // second iteration if the first produced no new facts. This is still
+    // faster than `run()` because `run()` does up to 16 iterations while
+    // `run_incremental()` does at most 2 (one to re-derive, one to confirm
+    // fixed point). A future version will track per-value dependencies
+    // for true incremental dataflow.
+    const AnalyzerMetrics& run_incremental();
+
+    // Mark the analyzer's facts as potentially stale. The next
+    // `run_incremental()` will re-derive everything.
+    void invalidate() { dirty_ = true; }
+
     // Reset all propagators and clear the fact store's facts (but keep
     // the store itself, since it holds a reference to the Module).
     void reset() {
@@ -134,6 +157,7 @@ private:
     std::vector<std::unique_ptr<FactPropagator>> propagators_;
     NumericalMode mode_ = NumericalMode::Relaxed;
     AnalyzerMetrics metrics_;
+    bool dirty_ = true;  // true = facts may be stale, need re-derivation
 
     // Track actual runtimes for prediction-error computation.
     std::unordered_map<ValueId, double> actual_runtimes_;

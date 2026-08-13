@@ -556,13 +556,12 @@ PreservedAnalyses UnifiedRecomputationPass::run(Module& m, AnalysisManager& am) 
 // UnifiedPassPipeline
 //
 // Owns a shared UnifiedAnalyzer. The first pass triggers the initial
-// analyzer run; subsequent passes reuse the FactStore. When a pass
-// mutates the IR (returns PreservedAnalyses::none()), the pipeline
-// re-runs the analyzer so the next pass sees fresh facts.
+// analyzer run (full fixed-point). Subsequent passes reuse the FactStore.
+// When a pass mutates the IR, the pipeline calls `run_incremental()` —
+// which does at most 2 iterations (one to re-derive, one to confirm)
+// instead of `run()`'s up to 16.
 //
-// This cuts total analyzer invocations from N (one per pass) to
-// ~1-3 (one initial + one after each IR-mutating pass). In practice
-// for a 6-pass pipeline on unchanged IR: 1 run instead of 6.
+// This cuts total analyzer cost from N×full_run to 1×full_run + (N-1)×incremental.
 // ===========================================================================
 PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     stats_ = Stats{};
@@ -573,21 +572,22 @@ PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     shared.set_hardware(HardwareModel::generic_nvidia_gpu());
     shared.add_default_propagators();
 
-    // Helper: run the analyzer (if needed) and account for it.
-    auto refresh = [&](bool force) -> void {
-        // We always run on the first call (force=true) and re-run when
-        // a pass mutated the IR (force=true). Otherwise skip — the
-        // facts are still fresh.
-        if (!force) return;
+    // Helper: run the analyzer. `full=true` does a complete fixed-point
+    // run; `full=false` does an incremental run (only if dirty).
+    auto refresh = [&](bool full) -> void {
         auto t0 = std::chrono::steady_clock::now();
-        shared.run();
+        if (full) {
+            shared.run();
+        } else {
+            shared.run_incremental();
+        }
         auto t1 = std::chrono::steady_clock::now();
         stats_.analyzer_latency_sec +=
             std::chrono::duration<double, std::milli>(t1 - t0).count() / 1000.0;
         ++stats_.analyzer_runs;
     };
 
-    // Initial analyzer run.
+    // Initial FULL analyzer run (must converge from scratch).
     refresh(true);
 
     // Pass 1: ConstantFolding (reads facts, may mutate IR).
@@ -596,7 +596,8 @@ PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     auto pa = cf.run(m, am);
     stats_.const_fold = cf.stats();
     bool ir_changed = !pa.preserves_all();
-    refresh(ir_changed);
+    if (ir_changed) shared.invalidate();
+    refresh(false);
 
     // Pass 2: Canonicalize (reads facts, may mutate IR).
     UnifiedCanonicalizePass can;
@@ -604,7 +605,8 @@ PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     pa = can.run(m, am);
     stats_.canonicalize = can.stats();
     ir_changed = !pa.preserves_all();
-    refresh(ir_changed);
+    if (ir_changed) shared.invalidate();
+    refresh(false);
 
     // Pass 3: CSE (reads facts, may mutate IR).
     UnifiedCSEPass cse;
@@ -612,7 +614,8 @@ PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     pa = cse.run(m, am);
     stats_.cse = cse.stats();
     ir_changed = !pa.preserves_all();
-    refresh(ir_changed);
+    if (ir_changed) shared.invalidate();
+    refresh(false);
 
     // Pass 4: CopyElimination (reads facts, may mutate IR).
     UnifiedCopyEliminationPass ce;
@@ -620,7 +623,8 @@ PreservedAnalyses UnifiedPassPipeline::run(Module& m, AnalysisManager& am) {
     pa = ce.run(m, am);
     stats_.copy_elim = ce.stats();
     ir_changed = !pa.preserves_all();
-    refresh(ir_changed);
+    if (ir_changed) shared.invalidate();
+    refresh(false);
 
     // Pass 5: Recomputation (reads facts, annotates IR — doesn't mutate).
     UnifiedRecomputationPass rc;

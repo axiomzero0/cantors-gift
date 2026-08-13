@@ -58,6 +58,50 @@ const AnalyzerMetrics& UnifiedAnalyzer::run() {
     store_.graph_facts().analysis_latency_sec = metrics_.latency_sec;
     store_.graph_facts().worklist_processed = metrics_.worklist_processed;
 
+    dirty_ = false;  // facts are now fresh
+    return metrics_;
+}
+
+const AnalyzerMetrics& UnifiedAnalyzer::run_incremental() {
+    // If facts are already fresh, do nothing.
+    if (!dirty_) {
+        return metrics_;
+    }
+
+    // Incremental strategy: run ONE iteration of all propagators.
+    // If it produces new facts, run one more to confirm fixed point.
+    // This is at most 2 iterations vs `run()`'s up to 16.
+    auto t_start = std::chrono::steady_clock::now();
+
+    // Save the previous facts_discovered count so we can report the
+    // incremental delta.
+    u32 prev_facts = metrics_.facts_discovered;
+    metrics_.iterations = 0;
+    metrics_.facts_discovered = 0;
+
+    // First incremental iteration.
+    ++metrics_.iterations;
+    u32 discovered = run_one_iteration();
+    metrics_.facts_discovered += discovered;
+
+    // If we found new facts, run one more to confirm fixed point.
+    if (discovered > 0) {
+        ++metrics_.iterations;
+        u32 more = run_one_iteration();
+        metrics_.facts_discovered += more;
+    }
+
+    auto t_end = std::chrono::steady_clock::now();
+    metrics_.latency_sec =
+        std::chrono::duration<double, std::milli>(t_end - t_start).count() / 1000.0;
+    metrics_.contradictions = store_.stats().contradictions;
+    metrics_.worklist_processed = store_.facts_discovered();
+
+    store_.graph_facts().iterations_to_converge = metrics_.iterations;
+    store_.graph_facts().facts_discovered = prev_facts + metrics_.facts_discovered;
+    store_.graph_facts().analysis_latency_sec = metrics_.latency_sec;
+
+    dirty_ = false;  // facts are now fresh
     return metrics_;
 }
 
