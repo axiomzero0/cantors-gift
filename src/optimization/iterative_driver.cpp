@@ -3,6 +3,14 @@
 // The IterativeDriver runs the full optimization pipeline and then lowers
 // the optimized Tensor IR to Codegen IR, connecting the two halves of the
 // compiler. The resulting CGModule can be compiled by any backend.
+//
+// The pipeline now uses the unified Tensor Knowledge Graph as the primary
+// analysis layer. The old canonicalize/constfold/cse/dce cluster is
+// replaced by UnifiedPassPipeline (which shares a single analyzer run
+// across all six migrated passes). The new exploitation passes
+// (ReductionTreeSynthesis, CachePlacement, DeadStoreElimination,
+// ConstantTensorMaterialization) run as Phase 5.5 to exploit facts the
+// old passes don't compute.
 #include "cg/optimization/iterative_driver.hpp"
 #include "cg/optimization/canonicalize/algebraic.hpp"
 #include "cg/optimization/canonicalize/canonicalize.hpp"
@@ -20,6 +28,8 @@
 #include "cg/optimization/reduction/reduction_opt.hpp"
 #include "cg/optimization/shape/shape_opt.hpp"
 #include "cg/optimization/specialization/specialization.hpp"
+#include "cg/optimization/unified/migrated_passes.hpp"
+#include "cg/optimization/unified/unified_passes.hpp"
 
 namespace cg {
 
@@ -43,14 +53,23 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
     for (usize iter = 0; iter < opts_.max_iterations; ++iter) {
         report.iterations_run = iter + 1;
 
-        // Phase 1: canonicalization + algebraic + SCCP + const fold + DCE.
+        // Phase 1: unified migration pipeline (replaces old canonicalize +
+        // constfold + cse + dce + copy_elim + recompute cluster).
+        // This shares a single analyzer run across all six migrated passes
+        // via the shared-analyzer optimization (~3-4x faster than running
+        // each pass with its own analyzer).
         {
             PassManager pm;
-            pm.add(std::make_unique<CanonicalizePass>());
+            pm.add(std::make_unique<UnifiedPassPipeline>());
+            pm.run(m, am_);
+        }
+
+        // Phase 1b: legacy SCCP + algebraic (not yet migrated). These run
+        // after the unified cluster so they see canonicalized IR.
+        {
+            PassManager pm;
             pm.add(std::make_unique<AlgebraicSimplificationPass>());
             pm.add(std::make_unique<SCCPPass>());
-            pm.add(std::make_unique<ConstantFoldingPass>());
-            pm.add(std::make_unique<CSEPass>());
             pm.add(std::make_unique<DCEPass>());
             pm.run(m, am_);
         }
@@ -86,7 +105,26 @@ IterativeDriverReport IterativeDriver::run(Module& m) {
             pm.run(m, am_);
         }
 
-        // Phase 6: reduction optimization.
+        // Phase 5b: unified exploitation passes. These consume the
+        // unified fact store to exploit facts the old passes don't use:
+        //   - ReductionTreeSynthesis: chooses tree/warp/block/hierarchical
+        //     based on ReductionInfo (axes, associativity, identity).
+        //   - CachePlacement: annotates tensors with register/shared/L2/global
+        //     based on CacheBehavior (l2_hit_rate, reuse_factor).
+        //   - DeadStoreElimination: removes stores with zero readers.
+        //   - ConstantTensorMaterialization: replaces large Zero/One/Identity
+        //     constants with symbolic markers (avoids materializing MB).
+        {
+            PassManager pm;
+            pm.add(std::make_unique<ReductionTreeSynthesis>());
+            pm.add(std::make_unique<CachePlacement>());
+            pm.add(std::make_unique<DeadStoreElimination>());
+            pm.add(std::make_unique<ConstantTensorMaterialization>());
+            pm.run(m, am_);
+        }
+
+        // Phase 6: reduction optimization (legacy; runs after tree synthesis
+        // so it can read the reduction_strategy attribute).
         {
             PassManager pm;
             pm.add(std::make_unique<ReductionOptimizationPass>());

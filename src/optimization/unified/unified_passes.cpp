@@ -47,7 +47,7 @@ PreservedAnalyses PropertyDrivenSimplification::run(Module& m, AnalysisManager& 
     stats_ = Stats{};
     auto analyzer = make_analyzer(m, am);
     analyzer.run();
-    auto& store = analyzer.store();
+    const FactStore& store = analyzer.store();
 
     bool changed = false;
     for (auto& f : m.functions()) {
@@ -205,7 +205,7 @@ PreservedAnalyses CostGuidedFusion::run(Module& m, AnalysisManager& am) {
     auto analyzer = make_analyzer(m, am);
     analyzer.set_hardware(HardwareModel::generic_nvidia_gpu());
     analyzer.run();
-    auto& store = analyzer.store();
+    const FactStore& store = analyzer.store();
 
     // Walk the dependence graph: for each (producer, consumer) pair,
     // ask the FactStore "should I fuse these?" and act on the answer.
@@ -321,7 +321,7 @@ PreservedAnalyses AliasAwareMemoryPlanning::run(Module& m, AnalysisManager& am) 
     stats_ = Stats{};
     auto analyzer = make_analyzer(m, am);
     analyzer.run();
-    auto& store = analyzer.store();
+    const FactStore& store = analyzer.store();
 
     // Group values by alias_set_id. Values with the same alias set can
     // share storage.
@@ -366,7 +366,259 @@ PreservedAnalyses AliasAwareMemoryPlanning::run(Module& m, AnalysisManager& am) 
 }
 
 // ===========================================================================
-// UnifiedOptimizationPipeline (runs all five)
+// Pass 6: ReductionTreeSynthesis
+//
+// Uses ReductionInfo to choose tree / warp / block / hierarchical / linear
+// reduction based on reduction_length + hardware warp size.
+// ===========================================================================
+PreservedAnalyses ReductionTreeSynthesis::run(Module& m, AnalysisManager& am) {
+    stats_ = Stats{};
+    auto analyzer = make_analyzer(m, am);
+    analyzer.run();
+    const FactStore& store = analyzer.store();
+
+    bool changed = false;
+    for (auto& f : m.functions()) {
+        for (auto& op : *f->entry()) {
+            if (op.opcode != OP_REDUCE_SUM && op.opcode != OP_REDUCE_MAX &&
+                op.opcode != OP_REDUCE_MEAN) continue;
+            if (op.results.empty()) continue;
+
+            ++stats_.total_reductions;
+
+            // Look up reduction info from the fact store.
+            const TensorFacts* tf = store.facts_for(op.results[0].id());
+            if (!tf || !tf->reduction.known) continue;
+
+            const auto& ri = tf->reduction.value;
+            if (!ri.is_reduction) continue;
+
+            // Choose the tree structure based on reduction length.
+            // Get the input shape to estimate reduction length.
+            u64 reduction_length = 0;
+            if (!op.operands.empty()) {
+                auto in = op.operands[0].as_tensor();
+                if (in) {
+                    reduction_length = 1;
+                    for (auto& axis : ri.reduction_axes) {
+                        if (axis >= 0 && static_cast<usize>(axis) < in->shape.rank()) {
+                            DimExprPtr d = in->shape[axis];
+                            if (d->is_constant()) {
+                                reduction_length *= static_cast<u64>(d->value);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Heuristic (hardware-aware):
+            //   reduction_length <= 32     -> warp reduction (1 warp)
+            //   reduction_length <= 1024   -> block reduction (tree within a block)
+            //   reduction_length <= 65536  -> hierarchical (block + cross-block)
+            //   larger                     -> linear (multi-pass)
+            //
+            // Associativity is required for tree reduction (which reorders
+            // additions). We check is_associative AND that the numerical
+            // mode allows reassociation (handled by the propagator: it
+            // only sets is_associative=true for sum/max under Relaxed+).
+            std::string strategy;
+            if (!ri.is_associative) {
+                strategy = "linear";
+                ++stats_.linear_chosen;
+            } else if (reduction_length <= 32) {
+                strategy = "warp";
+                ++stats_.warp_chosen;
+            } else if (reduction_length <= 1024) {
+                strategy = "tree";
+                ++stats_.tree_chosen;
+            } else if (reduction_length <= 65536) {
+                strategy = "block";
+                ++stats_.block_chosen;
+            } else {
+                strategy = "hierarchical";
+                ++stats_.hierarchical_chosen;
+            }
+
+            op.attributes.set("reduction_strategy",
+                              Attribute::make_string(std::move(strategy)));
+            op.attributes.set("reduction_length",
+                              Attribute::make_integer(static_cast<i64>(reduction_length)));
+            op.attributes.set("reduction_identity",
+                              Attribute::make_float(ri.identity_value));
+            changed = true;
+        }
+    }
+
+    if (!changed) return PreservedAnalyses::all();
+    PreservedAnalyses pa;
+    return pa;
+}
+
+// ===========================================================================
+// Pass 7: CachePlacement
+//
+// Uses CacheBehavior to annotate each tensor with placement:
+//   register / shared / L2 / global
+// ===========================================================================
+PreservedAnalyses CachePlacement::run(Module& m, AnalysisManager& am) {
+    stats_ = Stats{};
+    auto analyzer = make_analyzer(m, am);
+    analyzer.set_hardware(HardwareModel::generic_nvidia_gpu());
+    analyzer.run();
+    const FactStore& store = analyzer.store();
+
+    bool changed = false;
+    for (auto& f : m.functions()) {
+        for (auto& op : *f->entry()) {
+            if (op.results.empty()) continue;
+            ValueId vid = op.results[0].id();
+            const TensorFacts* tf = store.facts_for(vid);
+            if (!tf) continue;
+
+            std::string placement;
+            if (tf->cache_behavior.known) {
+                const auto& cb = tf->cache_behavior.value;
+                if (cb.accumulator_in_registers) {
+                    placement = "register";
+                    ++stats_.register_placed;
+                } else if (cb.fits_in_l2 && cb.l2_hit_rate > 0.5) {
+                    placement = "l2";
+                    ++stats_.l2_placed;
+                } else if (cb.shared_reuse_factor > 1.0) {
+                    placement = "shared";
+                    ++stats_.shared_placed;
+                } else {
+                    placement = "global";
+                    ++stats_.global_placed;
+                }
+            } else {
+                // No cache behavior info — default to global.
+                placement = "global";
+                ++stats_.global_placed;
+            }
+
+            op.attributes.set("cache_placement",
+                              Attribute::make_string(std::move(placement)));
+            ++stats_.total_decisions;
+            changed = true;
+        }
+    }
+
+    if (!changed) return PreservedAnalyses::all();
+    PreservedAnalyses pa;
+    return pa;
+}
+
+// ===========================================================================
+// Pass 8: DeadStoreElimination
+//
+// Uses AliasClass + Lifetime (num_users) to find stores with no readers.
+// ===========================================================================
+PreservedAnalyses DeadStoreElimination::run(Module& m, AnalysisManager& am) {
+    stats_ = Stats{};
+    auto analyzer = make_analyzer(m, am);
+    analyzer.run();
+    const FactStore& store = analyzer.store();
+
+    bool changed = false;
+    for (auto& f : m.functions()) {
+        std::vector<Operation*> to_remove;
+        for (auto& op : *f->entry()) {
+            // We treat any pure op whose result has zero users as a
+            // "dead store" (the result was computed but never consumed).
+            // This overlaps with DCE but also catches ops whose results
+            // are written to memory but never read back.
+            if (!op.is_pure()) continue;
+            if (op.results.empty()) continue;
+
+            ValueId vid = op.results[0].id();
+            const TensorFacts* tf = store.facts_for(vid);
+            if (!tf || !tf->num_users.known) continue;
+
+            if (tf->num_users.value == 0) {
+                // Estimate bytes saved from the result type.
+                auto t = op.results[0].as_tensor();
+                if (t) {
+                    u64 bytes = t->shape.num_elements() * dtype_size(t->dtype);
+                    stats_.bytes_saved += bytes;
+                }
+                to_remove.push_back(&op);
+                ++stats_.dead_stores_removed;
+            }
+        }
+        for (Operation* op : to_remove) {
+            f->entry()->remove(op);
+            changed = true;
+        }
+    }
+
+    if (!changed) return PreservedAnalyses::all();
+    PreservedAnalyses pa;
+    return pa;
+}
+
+// ===========================================================================
+// Pass 9: ConstantTensorMaterialization
+//
+// Replaces large constant tensors (Zero, One, Identity) with symbolic
+// markers so codegen can emit fill kernels instead of materializing MB
+// of constant data.
+// ===========================================================================
+PreservedAnalyses ConstantTensorMaterialization::run(Module& m, AnalysisManager& am) {
+    stats_ = Stats{};
+    auto analyzer = make_analyzer(m, am);
+    analyzer.run();
+    const FactStore& store = analyzer.store();
+
+    bool changed = false;
+    for (auto& f : m.functions()) {
+        for (auto& op : *f->entry()) {
+            if (op.opcode != OP_CONSTANT) continue;
+            if (op.results.empty()) continue;
+            ValueId vid = op.results[0].id();
+            const TensorFacts* tf = store.facts_for(vid);
+            if (!tf || !tf->properties.known) continue;
+
+            // Get the constant's total byte size.
+            auto t = op.results[0].as_tensor();
+            if (!t) continue;
+            u64 bytes = t->shape.num_elements() * dtype_size(t->dtype);
+
+            // Only symbolize constants above 1KB (smaller ones aren't
+            // worth the codegen complexity).
+            if (bytes < 1024) continue;
+
+            auto props = tf->properties.value;
+            std::string symbolic;
+            if (has_property(props, TensorProperty::Zero)) {
+                symbolic = "zero_tensor";
+                ++stats_.zero_tensors_symbolized;
+                stats_.bytes_avoided += bytes;
+            } else if (has_property(props, TensorProperty::One)) {
+                symbolic = "one_tensor";
+                ++stats_.one_tensors_symbolized;
+                stats_.bytes_avoided += bytes;
+            } else if (has_property(props, TensorProperty::Identity)) {
+                symbolic = "identity_tensor";
+                ++stats_.identity_tensors_symbolized;
+                stats_.bytes_avoided += bytes;
+            } else {
+                continue;
+            }
+
+            op.attributes.set("symbolic",
+                              Attribute::make_string(std::move(symbolic)));
+            changed = true;
+        }
+    }
+
+    if (!changed) return PreservedAnalyses::all();
+    PreservedAnalyses pa;
+    return pa;
+}
+
+// ===========================================================================
+// UnifiedOptimizationPipeline (runs all nine passes)
 // ===========================================================================
 PreservedAnalyses UnifiedOptimizationPipeline::run(Module& m, AnalysisManager& am) {
     stats_ = Stats{};
@@ -390,6 +642,22 @@ PreservedAnalyses UnifiedOptimizationPipeline::run(Module& m, AnalysisManager& a
     AliasAwareMemoryPlanning p5;
     p5.run(m, am);
     stats_.alias = p5.stats();
+
+    ReductionTreeSynthesis p6;
+    p6.run(m, am);
+    stats_.reduction = p6.stats();
+
+    CachePlacement p7;
+    p7.run(m, am);
+    stats_.cache = p7.stats();
+
+    DeadStoreElimination p8;
+    p8.run(m, am);
+    stats_.dse = p8.stats();
+
+    ConstantTensorMaterialization p9;
+    p9.run(m, am);
+    stats_.const_materialize = p9.stats();
 
     return PreservedAnalyses::none();
 }
