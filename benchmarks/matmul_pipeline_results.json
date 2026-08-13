@@ -1,0 +1,374 @@
+{
+  "hardware": "A100-class (108 SMs, 312 TF F16 TC)",
+  "numerical_mode": "FastMath",
+  "results": [
+    {
+      "shape": {
+        "M": 1024,
+        "K": 1024,
+        "N": 1024,
+        "label": "1024^3 (baseline)"
+      },
+      "timing": {
+        "ir_construction_sec": 5.189e-06,
+        "gta_sec": 7.414e-06,
+        "egraph_saturation_sec": 2.3800000000000001e-07,
+        "scheduling_sec": 4.715000000000001e-06,
+        "autotuning_sec": 3.0799999999999997e-06,
+        "codegen_sec": 1.316e-06,
+        "total_sec": 0.000439
+      },
+      "roofline": {
+        "flops": 2147483648,
+        "graph_bytes": 12582912,
+        "kernel_bytes": 12582912,
+        "effective_bytes": 5872025,
+        "graph_intensity": 170.66666666666666,
+        "kernel_intensity": 170.66666666666666,
+        "effective_intensity": 365.7143230827525,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 512,
+        "num_sms": 108,
+        "num_waves": 5,
+        "sm_utilization_pct": 94.81481481481481,
+        "tail_efficiency_pct": 94.81481481481481,
+        "idle_sms_in_tail": 28,
+        "wave_quant_sec": 3.568942434947769e-07,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 7.239854653751187e-06,
+        "analytical_estimate_sec": 7.239854653751187e-06,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 1025,
+        "K": 1024,
+        "N": 1024,
+        "label": "odd M"
+      },
+      "timing": {
+        "ir_construction_sec": 5.8e-08,
+        "gta_sec": 3.445e-06,
+        "egraph_saturation_sec": 1.34e-07,
+        "scheduling_sec": 3.259e-06,
+        "autotuning_sec": 9.300000000000001e-07,
+        "codegen_sec": 8.000000000000001e-07,
+        "total_sec": 0.000184198
+      },
+      "roofline": {
+        "flops": 2149580800,
+        "graph_bytes": 12591104,
+        "kernel_bytes": 12591104,
+        "effective_bytes": 5876940,
+        "graph_intensity": 170.72218607677294,
+        "kernel_intensity": 170.72218607677294,
+        "effective_intensity": 365.7653132412446,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 528,
+        "num_sms": 108,
+        "num_waves": 5,
+        "sm_utilization_pct": 97.77777777777777,
+        "tail_efficiency_pct": 97.77777777777779,
+        "idle_sms_in_tail": 12,
+        "wave_quant_sec": 1.5310404558404568e-07,
+        "estimated_occupancy_pct": 75
+      },
+      "best_schedule": {
+        "best_runtime_sec": 7.042786096866097e-06,
+        "analytical_estimate_sec": 7.042786096866097e-06,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 1024,
+        "K": 1025,
+        "N": 1024,
+        "label": "odd K"
+      },
+      "timing": {
+        "ir_construction_sec": 5.8e-08,
+        "gta_sec": 2.251e-06,
+        "egraph_saturation_sec": 5.0000000000000004e-08,
+        "scheduling_sec": 2.469e-06,
+        "autotuning_sec": 1.111e-06,
+        "codegen_sec": 5.23e-07,
+        "total_sec": 0.00017445700000000001
+      },
+      "roofline": {
+        "flops": 2149580800,
+        "graph_bytes": 12591104,
+        "kernel_bytes": 12591104,
+        "effective_bytes": 5873664,
+        "graph_intensity": 170.72218607677294,
+        "kernel_intensity": 170.72218607677294,
+        "effective_intensity": 365.96931659693166,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 512,
+        "num_sms": 108,
+        "num_waves": 5,
+        "sm_utilization_pct": 94.81481481481481,
+        "tail_efficiency_pct": 94.81481481481481,
+        "idle_sms_in_tail": 28,
+        "wave_quant_sec": 3.5724277302943973e-07,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 7.2469248243114916e-06,
+        "analytical_estimate_sec": 7.2469248243114916e-06,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 1024,
+        "K": 1024,
+        "N": 1025,
+        "label": "odd N"
+      },
+      "timing": {
+        "ir_construction_sec": 5.7e-08,
+        "gta_sec": 1.8079999999999999e-06,
+        "egraph_saturation_sec": 5.9e-08,
+        "scheduling_sec": 2.322e-06,
+        "autotuning_sec": 9.13e-07,
+        "codegen_sec": 4.79e-07,
+        "total_sec": 0.000141373
+      },
+      "roofline": {
+        "flops": 2149580800,
+        "graph_bytes": 12591104,
+        "kernel_bytes": 12591104,
+        "effective_bytes": 5876940,
+        "graph_intensity": 170.72218607677294,
+        "kernel_intensity": 170.72218607677294,
+        "effective_intensity": 365.7653132412446,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 528,
+        "num_sms": 108,
+        "num_waves": 5,
+        "sm_utilization_pct": 97.77777777777777,
+        "tail_efficiency_pct": 97.77777777777779,
+        "idle_sms_in_tail": 12,
+        "wave_quant_sec": 1.5310404558404568e-07,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 7.042786096866097e-06,
+        "analytical_estimate_sec": 7.042786096866097e-06,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 1000,
+        "K": 1000,
+        "N": 1000,
+        "label": "1000^3"
+      },
+      "timing": {
+        "ir_construction_sec": 3.8e-08,
+        "gta_sec": 1.35e-06,
+        "egraph_saturation_sec": 2.5999999999999998e-08,
+        "scheduling_sec": 2.261e-06,
+        "autotuning_sec": 8.55e-07,
+        "codegen_sec": 4.24e-07,
+        "total_sec": 0.000142012
+      },
+      "roofline": {
+        "flops": 2000000000,
+        "graph_bytes": 12000000,
+        "kernel_bytes": 12000000,
+        "effective_bytes": 5600000,
+        "graph_intensity": 166.66666666666666,
+        "kernel_intensity": 166.66666666666666,
+        "effective_intensity": 357.14285714285717,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 512,
+        "num_sms": 108,
+        "num_waves": 5,
+        "sm_utilization_pct": 94.81481481481481,
+        "tail_efficiency_pct": 94.81481481481481,
+        "idle_sms_in_tail": 28,
+        "wave_quant_sec": 3.3238366571699907e-07,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 6.742640075973409e-06,
+        "analytical_estimate_sec": 6.742640075973409e-06,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 512,
+        "K": 4096,
+        "N": 512,
+        "label": "skinny K (512x4096x512)"
+      },
+      "timing": {
+        "ir_construction_sec": 5.4e-08,
+        "gta_sec": 1.449e-06,
+        "egraph_saturation_sec": 4.2e-08,
+        "scheduling_sec": 3.1179999999999996e-06,
+        "autotuning_sec": 7.85e-07,
+        "codegen_sec": 3.35e-07,
+        "total_sec": 0.000135914
+      },
+      "roofline": {
+        "flops": 2147483648,
+        "graph_bytes": 17825792,
+        "kernel_bytes": 17825792,
+        "effective_bytes": 4404019,
+        "graph_intensity": 120.47058823529412,
+        "kernel_intensity": 120.47058823529412,
+        "effective_intensity": 487.619069763323,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 256,
+        "num_sms": 108,
+        "num_waves": 3,
+        "sm_utilization_pct": 79.01234567901234,
+        "tail_efficiency_pct": 79.01234567901234,
+        "idle_sms_in_tail": 68,
+        "wave_quant_sec": 1.8706518873061094e-06,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 1.078375793858816e-05,
+        "analytical_estimate_sec": 1.078375793858816e-05,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 4096,
+        "K": 512,
+        "N": 4096,
+        "label": "fat K (4096x512x4096)"
+      },
+      "timing": {
+        "ir_construction_sec": 3.9e-08,
+        "gta_sec": 1.053e-06,
+        "egraph_saturation_sec": 3.3000000000000004e-08,
+        "scheduling_sec": 2.213e-06,
+        "autotuning_sec": 8.94e-07,
+        "codegen_sec": 4.92e-07,
+        "total_sec": 0.000147482
+      },
+      "roofline": {
+        "flops": 17179869184,
+        "graph_bytes": 83886080,
+        "kernel_bytes": 83886080,
+        "effective_bytes": 70464307,
+        "graph_intensity": 204.8,
+        "kernel_intensity": 204.8,
+        "effective_intensity": 243.8095245015324,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 4096,
+        "num_sms": 108,
+        "num_waves": 38,
+        "sm_utilization_pct": 99.80506822612085,
+        "tail_efficiency_pct": 99.80506822612085,
+        "idle_sms_in_tail": 8,
+        "wave_quant_sec": 1.0733661458489529e-07,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 5.517101989663618e-05,
+        "analytical_estimate_sec": 5.517101989663618e-05,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    },
+    {
+      "shape": {
+        "M": 127,
+        "K": 127,
+        "N": 127,
+        "label": "small (127^3)"
+      },
+      "timing": {
+        "ir_construction_sec": 5.8e-08,
+        "gta_sec": 1.255e-06,
+        "egraph_saturation_sec": 3.8e-08,
+        "scheduling_sec": 1.991e-06,
+        "autotuning_sec": 7.799999999999999e-07,
+        "codegen_sec": 3.0200000000000003e-07,
+        "total_sec": 0.000131469
+      },
+      "roofline": {
+        "flops": 4096766,
+        "graph_bytes": 193548,
+        "kernel_bytes": 193548,
+        "effective_bytes": 90322,
+        "graph_intensity": 21.166666666666668,
+        "kernel_intensity": 21.166666666666668,
+        "effective_intensity": 45.35734372578109,
+        "ridge_f32": 9.75,
+        "ridge_f16_tc": 156.0
+      },
+      "sm_utilization": {
+        "num_blocks": 16,
+        "num_sms": 108,
+        "num_waves": 1,
+        "sm_utilization_pct": 14.814814814814815,
+        "tail_efficiency_pct": 14.814814814814813,
+        "idle_sms_in_tail": 92,
+        "wave_quant_sec": 8.261604368471035e-08,
+        "estimated_occupancy_pct": 79
+      },
+      "best_schedule": {
+        "best_runtime_sec": 1.7960009496676163e-07,
+        "analytical_estimate_sec": 1.7960009496676163e-07,
+        "uses_tensor_core": true,
+        "schedule_space_size": 162,
+        "pruned_space_size": 8,
+        "autotune_benchmarks": 20
+      }
+    }
+  ]
+}

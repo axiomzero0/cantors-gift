@@ -1,0 +1,60 @@
+{
+  "hardware": "A100-class (108 SMs, 312 TF F16 TC)",
+  "numerical_mode": "FastMath",
+  "results": [
+    {
+      "label": "Small matmul + bias + relu (128x256x512)",
+      "iterations": 2,
+      "facts_discovered": 75,
+      "latency_sec": 8.2426e-05,
+      "wall_sec": 8.90139999683015e-05,
+      "contradictions": 0,
+      "tensors_tracked": 6
+    },
+    {
+      "label": "Large matmul + bias + relu (1024^3)",
+      "iterations": 2,
+      "facts_discovered": 75,
+      "latency_sec": 2.7736e-05,
+      "wall_sec": 2.8530999770737253e-05,
+      "contradictions": 0,
+      "tensors_tracked": 6
+    },
+    {
+      "label": "Elementwise chain (1024-wide, depth 10)",
+      "iterations": 2,
+      "facts_discovered": 154,
+      "latency_sec": 4.9083000000000004e-05,
+      "wall_sec": 4.965899961462128e-05,
+      "contradictions": 0,
+      "tensors_tracked": 11
+    },
+    {
+      "label": "Elementwise chain (1024-wide, depth 50)",
+      "iterations": 2,
+      "facts_discovered": 714,
+      "latency_sec": 0.000241296,
+      "wall_sec": 0.00024230700000771321,
+      "contradictions": 0,
+      "tensors_tracked": 51
+    },
+    {
+      "label": "Reduction chain (1024x1024, depth 5)",
+      "iterations": 2,
+      "facts_discovered": 84,
+      "latency_sec": 2.6322000000000003e-05,
+      "wall_sec": 2.689500024644076e-05,
+      "contradictions": 0,
+      "tensors_tracked": 6
+    },
+    {
+      "label": "Layout chain (1024x1024, depth 10)",
+      "iterations": 2,
+      "facts_discovered": 121,
+      "latency_sec": 3.7034e-05,
+      "wall_sec": 3.7770999824715545e-05,
+      "contradictions": 0,
+      "tensors_tracked": 11
+    }
+  ]
+}

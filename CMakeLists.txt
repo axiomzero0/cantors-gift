@@ -179,6 +179,12 @@ if(CG_BUILD_TOOLS)
     target_link_libraries(cgc PRIVATE cantors_gift)
     set_target_properties(cgc PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+    # A/B benchmark: old passes vs unified-driven passes.
+    add_executable(benchmark_old_vs_unified benchmarks/benchmark_old_vs_unified.cpp)
+    target_link_libraries(benchmark_old_vs_unified PRIVATE cantors_gift)
+    set_target_properties(benchmark_old_vs_unified PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
 # ---------------------------------------------------------------------------

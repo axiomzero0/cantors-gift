@@ -1,0 +1,327 @@
+{
+  "hardware": "A100-class (108 SMs, 312 TF F16 TC)",
+  "reps": 5,
+  "results": [
+    {
+      "workload": "Small matmul (128x256x512)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 9.367000529891811,
+        "latency_min_us": 6.913000106578693,
+        "latency_max_us": 33.68899979250273,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 24.139999368344434,
+        "latency_min_us": 23.01699987583561,
+        "latency_max_us": 84.03799984080251,
+        "facts_exposed": 75,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.3880282011181435,
+      "facts_ratio": 12.5
+    },
+    {
+      "workload": "Medium matmul (512x512x512)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 7.130999620130751,
+        "latency_min_us": 6.115999894973356,
+        "latency_max_us": 9.759000022313558,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 24.541000129829627,
+        "latency_min_us": 23.09600040462101,
+        "latency_max_us": 34.44199955993099,
+        "facts_exposed": 75,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.2905749391795573,
+      "facts_ratio": 12.5
+    },
+    {
+      "workload": "Large matmul (1024^3)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 8.71700012794463,
+        "latency_min_us": 6.106999535404611,
+        "latency_max_us": 30.68000023631612,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 24.214000404754188,
+        "latency_min_us": 22.718000764143653,
+        "latency_max_us": 26.749999960884452,
+        "facts_exposed": 75,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.35999834732938757,
+      "facts_ratio": 12.5
+    },
+    {
+      "workload": "Elementwise chain (depth 5)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 9.525999303150456,
+        "latency_min_us": 6.893000318086706,
+        "latency_max_us": 10.803000805026386,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 24.30299991829088,
+        "latency_min_us": 21.7099996007164,
+        "latency_max_us": 29.906999770901166,
+        "facts_exposed": 84,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.39196804243006295,
+      "facts_ratio": 14.0
+    },
+    {
+      "workload": "Elementwise chain (depth 10)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 14.108999494055752,
+        "latency_min_us": 9.968000085791573,
+        "latency_max_us": 19.49400029843673,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 36.12000000430271,
+        "latency_min_us": 34.858000617532525,
+        "latency_max_us": 51.216999963799026,
+        "facts_exposed": 154,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.39061460388635244,
+      "facts_ratio": 25.666666666666668
+    },
+    {
+      "workload": "Elementwise chain (depth 25)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 24.371999643335585,
+        "latency_min_us": 21.80199953727424,
+        "latency_max_us": 32.0270000884193,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 78.37599969207076,
+        "latency_min_us": 75.80200053780572,
+        "latency_max_us": 116.26700052147498,
+        "facts_exposed": 364,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.31096253622397213,
+      "facts_ratio": 60.666666666666664
+    },
+    {
+      "workload": "Elementwise chain (depth 50)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 50.253999688720796,
+        "latency_min_us": 47.55000009026844,
+        "latency_max_us": 54.17600004875567,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 171.94599968206603,
+        "latency_min_us": 156.5789998494438,
+        "latency_max_us": 198.24099945253693,
+        "facts_exposed": 714,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.2922661753204037,
+      "facts_ratio": 119.0
+    },
+    {
+      "workload": "Layout chain (depth 5)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 11.59799921879312,
+        "latency_min_us": 7.749000360490754,
+        "latency_max_us": 21.861000277567655,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 23.58899928367464,
+        "latency_min_us": 21.423000362119637,
+        "latency_max_us": 29.750000066997018,
+        "facts_exposed": 66,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.49166982792779207,
+      "facts_ratio": 11.0
+    },
+    {
+      "workload": "Layout chain (depth 10)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 13.760000001639128,
+        "latency_min_us": 11.372999324521516,
+        "latency_max_us": 16.197000149986707,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 37.05600011016941,
+        "latency_min_us": 34.93799977150047,
+        "latency_max_us": 37.86900015256833,
+        "facts_exposed": 121,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.3713298780421507,
+      "facts_ratio": 20.166666666666668
+    },
+    {
+      "workload": "Reduction chain (depth 3)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 6.492000466096215,
+        "latency_min_us": 5.920000148762483,
+        "latency_max_us": 8.952999451139476,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 20.00699987547705,
+        "latency_min_us": 17.131000277004205,
+        "latency_max_us": 31.554000088362955,
+        "facts_exposed": 56,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.32448645506583823,
+      "facts_ratio": 9.333333333333334
+    },
+    {
+      "workload": "Reduction chain (depth 5)",
+      "old": {
+        "system": "old (GlobalAnalysisManager)",
+        "latency_us": 9.49400055105798,
+        "latency_min_us": 7.014999937382527,
+        "latency_max_us": 10.226000085822307,
+        "facts_exposed": 6,
+        "has_provenance": false,
+        "has_confidence": false,
+        "has_fusion_query": false,
+        "has_per_op_facts": false
+      },
+      "new": {
+        "system": "new (UnifiedAnalyzer)",
+        "latency_us": 25.520999770378694,
+        "latency_min_us": 23.1869998970069,
+        "latency_max_us": 26.386000172351487,
+        "facts_exposed": 84,
+        "has_provenance": true,
+        "has_confidence": true,
+        "has_fusion_query": true,
+        "has_per_op_facts": true,
+        "iterations": 2,
+        "contradictions": 0
+      },
+      "speedup": 0.3720073914219193,
+      "facts_ratio": 14.0
+    }
+  ],
+  "median_speedup": 0.3713298780421507,
+  "median_facts_ratio": 14.0
+}

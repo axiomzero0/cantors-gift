@@ -29,6 +29,7 @@ u32 AnalyticalCostModelV2::estimate_warps_per_sm(
 double AnalyticalCostModelV2::wave_quantization_penalty(
     u32 num_blocks, u32 num_sms) const {
     if (num_sms == 0) return 0;
+    if (num_blocks == 0) return 0;
 
     u32 full_waves = num_blocks / num_sms;
     u32 remainder = num_blocks % num_sms;
@@ -43,6 +44,11 @@ double AnalyticalCostModelV2::wave_quantization_penalty(
     // The penalty is the wasted fraction:
     //   penalty = 1 - (full_waves + remainder/num_sms) / (full_waves + 1)
     //           = (1 - remainder/num_sms) / (full_waves + 1)
+    //
+    // IMPORTANT: this is non-zero whenever remainder > 0, INCLUDING the
+    // case num_blocks < num_sms (one partial wave). For example, 64 blocks
+    // on 108 SMs gives full_waves=0, remainder=64, penalty=(1-64/108)/1 = 0.407.
+    // That is, ~41% of the wave time is wasted because 44 SMs sit idle.
     double work_ratio = static_cast<double>(remainder) / num_sms;
     double penalty = (1.0 - work_ratio) / (full_waves + 1);
     return penalty;
@@ -122,6 +128,45 @@ AnalyticalCostModelV2::estimate(const CostFeatures& f) const {
     u32 num_sms = hw_.num_cores; // SM count
     double wave_penalty = wave_quantization_penalty(f.num_blocks, num_sms);
     out.wave_quant_sec = out.overlapped_sec * wave_penalty;
+
+    // ---- Wave / SM utilization metrics (first-class outputs) ----
+    // These are NOT the same as occupancy. Occupancy = warps/SM / max_warps/SM.
+    // SM utilization = fraction of SMs that actually receive a block, averaged
+    // across waves. A kernel with 64 blocks on 108 SMs has 100% occupancy if
+    // it has enough warps, but only 59% SM utilization.
+    out.num_blocks = f.num_blocks;
+    out.num_sms = num_sms;
+    if (num_sms > 0 && f.num_blocks > 0) {
+        u32 full_waves = f.num_blocks / num_sms;
+        u32 remainder = f.num_blocks % num_sms;
+        out.num_waves = full_waves + (remainder > 0 ? 1 : 0);
+        out.idle_sms_in_tail = (remainder > 0) ? (num_sms - remainder) : 0;
+
+        // Average SM utilization across waves:
+        //   full_waves waves use all `num_sms` SMs (100%)
+        //   tail wave (if any) uses `remainder` SMs (remainder/num_sms)
+        // Average = (full_waves * num_sms + remainder) / (num_waves * num_sms)
+        if (out.num_waves > 0) {
+            double total_active_sm_slots =
+                static_cast<double>(full_waves) * num_sms +
+                static_cast<double>(remainder);
+            double total_sm_slots =
+                static_cast<double>(out.num_waves) * num_sms;
+            out.sm_utilization_pct = 100.0 * total_active_sm_slots / total_sm_slots;
+        }
+
+        // Tail efficiency: fraction of wave-time that was actually useful work.
+        // For a single wave of `num_blocks` blocks on `num_sms` SMs:
+        //   efficiency = num_blocks / num_sms  (capped at 1.0)
+        // Across multiple waves, the tail wave dominates the inefficiency.
+        // tail_efficiency = work_done / time_elapsed
+        //                 = (full_waves + remainder/num_sms) / (full_waves + 1)
+        if (out.num_waves > 0) {
+            double work_done = static_cast<double>(full_waves) +
+                               (remainder > 0 ? static_cast<double>(remainder) / num_sms : 0.0);
+            out.tail_efficiency_pct = 100.0 * work_done / static_cast<double>(out.num_waves);
+        }
+    }
 
     // 7. Total
     out.total_sec = out.overlapped_sec + out.stall_sec + out.wave_quant_sec;

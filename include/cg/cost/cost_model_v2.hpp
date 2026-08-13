@@ -90,6 +90,19 @@ public:
         // Occupancy estimate
         u32 estimated_warps_per_sm = 0;
         u32 estimated_occupancy_pct = 0;
+
+        // ---- Wave / SM utilization (first-class metrics) ----
+        // "1 wave" is NOT the same as "perfect utilization". If 64 blocks
+        // run on 108 SMs, only 64 SMs receive work; the other 44 sit idle.
+        // The SM utilization is the fraction of SMs that actually receive
+        // a block in the steady state, averaged across waves.
+        u32 num_blocks = 0;
+        u32 num_sms = 0;
+        u32 num_waves = 0;                // ceil(num_blocks / num_sms)
+        double sm_utilization_pct = 0.0;  // (active SMs / total SMs) * 100, averaged
+        double tail_efficiency_pct = 0.0; // work done / wave time, in [0,100]
+        // For partial last wave: how many SMs sit idle in the tail wave.
+        u32 idle_sms_in_tail = 0;
     };
 
     CostBreakdown estimate(const CostFeatures& features) const;

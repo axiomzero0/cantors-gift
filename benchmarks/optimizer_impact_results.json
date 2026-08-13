@@ -1,0 +1,154 @@
+{
+  "results": [
+    {
+      "latency_sec": 0.0003461969999989378,
+      "property": {
+        "mul_zero": 5,
+        "mul_one": 0,
+        "add_zero": 0,
+        "matmul_identity": 0,
+        "total": 5
+      },
+      "range": {
+        "relu": 0,
+        "total": 0
+      },
+      "fusion": {
+        "accepted": 10,
+        "rejected_cost": 0,
+        "rejected_conf": 0,
+        "rejected_legality": 0,
+        "total_improvement": 10.000921599999996
+      },
+      "layout": {
+        "transpose_transpose": 0,
+        "total": 0
+      },
+      "alias": {
+        "buffers_merged": 0,
+        "bytes_saved": 0
+      },
+      "workload": "mul-zero chain (depth 5)"
+    },
+    {
+      "latency_sec": 0.00021284200010995846,
+      "property": {
+        "mul_zero": 0,
+        "mul_one": 0,
+        "add_zero": 0,
+        "matmul_identity": 0,
+        "total": 0
+      },
+      "range": {
+        "relu": 9,
+        "total": 9
+      },
+      "fusion": {
+        "accepted": 10,
+        "rejected_cost": 0,
+        "rejected_conf": 0,
+        "rejected_legality": 0,
+        "total_improvement": 9.996774400000001
+      },
+      "layout": {
+        "transpose_transpose": 0,
+        "total": 0
+      },
+      "alias": {
+        "buffers_merged": 0,
+        "bytes_saved": 0
+      },
+      "workload": "relu chain (depth 10)"
+    },
+    {
+      "latency_sec": 0.00019420499938860303,
+      "property": {
+        "mul_zero": 0,
+        "mul_one": 0,
+        "add_zero": 0,
+        "matmul_identity": 0,
+        "total": 0
+      },
+      "range": {
+        "relu": 0,
+        "total": 0
+      },
+      "fusion": {
+        "accepted": 0,
+        "rejected_cost": 10,
+        "rejected_conf": 0,
+        "rejected_legality": 0,
+        "total_improvement": 0.0
+      },
+      "layout": {
+        "transpose_transpose": 5,
+        "total": 5
+      },
+      "alias": {
+        "buffers_merged": 9,
+        "bytes_saved": 9216
+      },
+      "workload": "transpose chain (depth 10)"
+    },
+    {
+      "latency_sec": 0.00012653499925363576,
+      "property": {
+        "mul_zero": 0,
+        "mul_one": 0,
+        "add_zero": 0,
+        "matmul_identity": 0,
+        "total": 0
+      },
+      "range": {
+        "relu": 0,
+        "total": 0
+      },
+      "fusion": {
+        "accepted": 3,
+        "rejected_cost": 2,
+        "rejected_conf": 0,
+        "rejected_legality": 0,
+        "total_improvement": 3.8388608
+      },
+      "layout": {
+        "transpose_transpose": 0,
+        "total": 0
+      },
+      "alias": {
+        "buffers_merged": 0,
+        "bytes_saved": 0
+      },
+      "workload": "matmul+bias+relu (1024^3)"
+    },
+    {
+      "latency_sec": 0.00012364599933789577,
+      "property": {
+        "mul_zero": 0,
+        "mul_one": 0,
+        "add_zero": 0,
+        "matmul_identity": 0,
+        "total": 0
+      },
+      "range": {
+        "relu": 0,
+        "total": 0
+      },
+      "fusion": {
+        "accepted": 5,
+        "rejected_cost": 0,
+        "rejected_conf": 0,
+        "rejected_legality": 0,
+        "total_improvement": 5.0524287999999995
+      },
+      "layout": {
+        "transpose_transpose": 0,
+        "total": 0
+      },
+      "alias": {
+        "buffers_merged": 0,
+        "bytes_saved": 0
+      },
+      "workload": "matmul+bias+relu (128x256x512)"
+    }
+  ]
+}

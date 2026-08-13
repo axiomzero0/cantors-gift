@@ -1,10 +1,24 @@
 // analysis/arithmetic_intensity.cpp
 //
+// Implements three levels of arithmetic intensity:
+//   1. Graph:    total FLOPs / total bytes (naive, no fusion, no cache)
+//   2. Kernel:   FLOPs / bytes-after-fusion (intermediates dropped)
+//   3. Effective: FLOPs / bytes-after-L2-and-shared-reuse
+//
+// The effective intensity is the number that actually determines whether
+// the fused kernel is memory- or compute-bound. A graph can look compute-
+// bound at the graph level (high FLOPs/byte) but become memory-bound at
+// the effective level if the schedule has poor cache reuse, or vice versa.
+//
 // Uses dynamic roofline ridge from HardwareModel instead of hardcoded 1.0/16.0.
 // The ridge = peak_flops / peak_bw. For H100 F16 TC: ~295 FLOPs/byte.
 // For CPU F32: ~5 FLOPs/byte.
 #include "cg/analysis/arithmetic_intensity.hpp"
 #include "cg/ir/ops.hpp"
+#include "cg/schedule/schedule.hpp"
+
+#include <algorithm>
+#include <cmath>
 
 namespace cg {
 
@@ -201,10 +215,149 @@ u64 compute_flops(const Operation& op) {
 
 } // namespace
 
+// static
+double ArithmeticIntensityAnalysis::l2_hit_rate(u64 tensor_bytes,
+                                                 const HardwareModel& hw) {
+    if (tensor_bytes == 0) return 0.0;
+    if (hw.l2_cache_bytes == 0) return 0.0;
+    if (tensor_bytes <= hw.l2_cache_bytes) {
+        // Fits in L2. Empirically ~0.8 due to conflict misses and
+        // capacity pressure from concurrent kernels.
+        return 0.8;
+    }
+    // Doesn't fit: hit rate scales with L2_size / tensor_size.
+    // This is the canonical "streaming" model: each byte is touched
+    // L2_size/tensor_size times out of total touches.
+    double r = static_cast<double>(hw.l2_cache_bytes) /
+               static_cast<double>(tensor_bytes);
+    return std::min(0.8, std::max(0.0, r));
+}
+
+// static
+u64 ArithmeticIntensityAnalysis::matmul_kernel_bytes(u64 M, u64 K, u64 N,
+                                                      DType dt,
+                                                      const Schedule& s) {
+    // After fusion + shared-memory tiling, the kernel-level bytes are:
+    //   A: M*K*elem_size / shared_reuse_factor
+    //   B: K*N*elem_size / shared_reuse_factor
+    //   C: M*N*elem_size (written once, no reuse)
+    //
+    // shared_reuse_factor = K / k_tile (each A/B tile is loaded once and
+    // reused across the K/k_tile outer steps).
+    //
+    // Note: this is BEFORE L2 effects. L2 reuse is captured at the
+    // effective-bytes level.
+
+    u32 m_tile = 64, n_tile = 64, k_tile = 32;
+    bool uses_shared = false;
+    for (const auto& t : s.transforms()) {
+        switch (t.kind) {
+            case TransformKind::Tile:
+                if (t.dim == "m") m_tile = static_cast<u32>(t.factor);
+                else if (t.dim == "n") n_tile = static_cast<u32>(t.factor);
+                else if (t.dim == "k") k_tile = static_cast<u32>(t.factor);
+                break;
+            case TransformKind::Cache:
+                if (t.mem == MemorySpace::Shared) uses_shared = true;
+                break;
+            default: break;
+        }
+    }
+
+    u64 elem = dtype_size(dt);
+    u64 a_bytes = M * K * elem;
+    u64 b_bytes = K * N * elem;
+    u64 c_bytes = M * N * elem;
+
+    if (uses_shared && k_tile > 0) {
+        // Each A and B tile is loaded once into shared memory and reused
+        // K/k_tile times across the reduction.
+        u64 reuse = std::max<u64>(1, K / k_tile);
+        a_bytes /= reuse;
+        b_bytes /= reuse;
+    }
+
+    return a_bytes + b_bytes + c_bytes;
+}
+
+// static
+u64 ArithmeticIntensityAnalysis::matmul_effective_bytes(u64 M, u64 K, u64 N,
+                                                         DType dt,
+                                                         const Schedule& s,
+                                                         const HardwareModel& hw) {
+    // Effective bytes = bytes that actually miss every cache level.
+    //
+    // For matmul:
+    //   A: M*K*elem_size / shared_reuse * (1 - l2_hit_a)
+    //   B: K*N*elem_size / shared_reuse * (1 - l2_hit_b)
+    //   C: M*N*elem_size (always written to global, no reuse)
+    //
+    // The accumulator (M_tile * N_tile per CTA) lives in registers and
+    // never touches memory, so it contributes ZERO effective bytes.
+
+    u32 m_tile = 64, n_tile = 64, k_tile = 32;
+    bool uses_shared = false;
+    u32 vector_width = 1;
+    for (const auto& t : s.transforms()) {
+        switch (t.kind) {
+            case TransformKind::Tile:
+                if (t.dim == "m") m_tile = static_cast<u32>(t.factor);
+                else if (t.dim == "n") n_tile = static_cast<u32>(t.factor);
+                else if (t.dim == "k") k_tile = static_cast<u32>(t.factor);
+                break;
+            case TransformKind::Cache:
+                if (t.mem == MemorySpace::Shared) uses_shared = true;
+                break;
+            case TransformKind::Vectorize:
+                vector_width = static_cast<u32>(t.factor);
+                break;
+            default: break;
+        }
+    }
+
+    u64 elem = dtype_size(dt);
+    u64 a_bytes = M * K * elem;
+    u64 b_bytes = K * N * elem;
+    u64 c_bytes = M * N * elem;
+
+    // Shared-memory reuse: each tile loaded once and reused K/k_tile times.
+    if (uses_shared && k_tile > 0) {
+        u64 reuse = std::max<u64>(1, K / k_tile);
+        a_bytes /= reuse;
+        b_bytes /= reuse;
+    }
+
+    // L2 reuse: B is reused across M/m_tile CTA blocks, A across N/n_tile.
+    // If the tensor fits in L2, hit rate is high.
+    double l2_a = l2_hit_rate(K * N * elem, hw); // wait — A is M*K
+    l2_a = l2_hit_rate(M * K * elem, hw);
+    double l2_b = l2_hit_rate(K * N * elem, hw);
+
+    // Effective bytes after L2 misses.
+    double eff_a = a_bytes * (1.0 - l2_a);
+    double eff_b = b_bytes * (1.0 - l2_b);
+    double eff_c = c_bytes; // C is write-only, no L2 reuse benefit on write
+
+    // Vectorization reduces transaction count (fewer load instructions,
+    // better coalescing). We model this as a slight reduction in effective
+    // bytes — the same data is moved, but with fewer transactions.
+    if (vector_width > 1) {
+        double coalescing_bonus = 1.0 - 0.05 * std::log2(double(vector_width));
+        coalescing_bonus = std::max(0.7, coalescing_bonus);
+        eff_a *= coalescing_bonus;
+        eff_b *= coalescing_bonus;
+    }
+
+    return static_cast<u64>(eff_a + eff_b + eff_c);
+}
+
 void ArithmeticIntensityAnalysis::compute() {
     Module& m = am_.module();
     total_flops_ = 0;
     total_bytes_ = 0;
+    total_effective_bytes_ = 0;
+
+    Schedule default_schedule; // empty schedule = no tiling
 
     for (auto& f : m.functions()) {
         for (auto& op : *f->entry()) {
@@ -239,6 +392,41 @@ void ArithmeticIntensityAnalysis::compute() {
 
             total_flops_ += oi.flops;
             total_bytes_ += oi.total_bytes();
+
+            // For matmul ops, also compute kernel + effective intensity.
+            if (op.opcode == OP_MATMUL && op.operands.size() == 2) {
+                auto a = op.operands[0].as_tensor();
+                auto b = op.operands[1].as_tensor();
+                if (a && b && a->shape.rank() >= 2 && b->shape.rank() >= 2 &&
+                    a->shape[a->shape.rank() - 2]->is_constant() &&
+                    a->shape[a->shape.rank() - 1]->is_constant() &&
+                    b->shape[b->shape.rank() - 1]->is_constant()) {
+                    u64 M = a->shape[a->shape.rank() - 2]->value;
+                    u64 K = a->shape[a->shape.rank() - 1]->value;
+                    u64 N = b->shape[b->shape.rank() - 1]->value;
+
+                    KernelIntensity ki;
+                    ki.flops = oi.flops;
+                    ki.graph_bytes = oi.total_bytes();
+                    ki.kernel_bytes = matmul_kernel_bytes(M, K, N,
+                                                          a->dtype,
+                                                          default_schedule);
+                    ki.effective_bytes = matmul_effective_bytes(M, K, N,
+                                                                a->dtype,
+                                                                default_schedule,
+                                                                hw_);
+                    ki.bound = classify(ki.flops, ki.effective_bytes, 32);
+                    kernel_intensities_[op.id] = ki;
+
+                    total_effective_bytes_ += ki.effective_bytes;
+                } else {
+                    total_effective_bytes_ += oi.total_bytes();
+                }
+            } else {
+                // Non-matmul ops: effective == graph bytes (no special model).
+                total_effective_bytes_ += oi.total_bytes();
+            }
+
             per_op_[op.id] = oi;
         }
     }
@@ -246,7 +434,10 @@ void ArithmeticIntensityAnalysis::compute() {
     module_intensity_ = total_bytes_ > 0
         ? static_cast<double>(total_flops_) / static_cast<double>(total_bytes_)
         : 0.0;
-    module_bound_ = classify(total_flops_, total_bytes_, 32);
+    module_effective_intensity_ = total_effective_bytes_ > 0
+        ? static_cast<double>(total_flops_) / static_cast<double>(total_effective_bytes_)
+        : 0.0;
+    module_bound_ = classify(total_flops_, total_effective_bytes_, 32);
 }
 
 } // namespace cg

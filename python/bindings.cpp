@@ -66,6 +66,12 @@
 #include "cg/optimization/iterative_driver.hpp"
 #include "cg/optimization/layout/layout_opt.hpp"
 #include "cg/optimization/memory/copy_elimination.hpp"
+#include "cg/pipeline/matmul_pipeline.hpp"
+#include "cg/analysis/unified/abstract_domain.hpp"
+#include "cg/analysis/unified/fact_store.hpp"
+#include "cg/analysis/unified/tensor_facts.hpp"
+#include "cg/analysis/unified/unified_analyzer.hpp"
+#include "cg/optimization/unified/unified_passes.hpp"
 #include "cg/optimization/memory/memory_planning.hpp"
 #include "cg/optimization/reduction/reduction_opt.hpp"
 #include "cg/optimization/shape/shape_opt.hpp"
@@ -828,10 +834,25 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def_readwrite("simd_width_bytes", &HardwareModel::simd_width_bytes)
         .def_readwrite("num_cores", &HardwareModel::num_cores)
         .def_readwrite("threads_per_core", &HardwareModel::threads_per_core)
+        .def_readwrite("launch_overhead_sec", &HardwareModel::launch_overhead_sec)
+        .def_readwrite("register_file_per_sm", &HardwareModel::register_file_per_sm)
+        .def_readwrite("base_regs_per_thread", &HardwareModel::base_regs_per_thread)
+        .def_readwrite("max_warps_per_sm", &HardwareModel::max_warps_per_sm)
+        .def_readwrite("warp_size", &HardwareModel::warp_size)
+        .def_readwrite("l2_read_bw", &HardwareModel::l2_read_bw)
+        .def_readwrite("l2_hit_rate_estimate", &HardwareModel::l2_hit_rate_estimate)
+        .def_readwrite("stall_cycles_per_warp", &HardwareModel::stall_cycles_per_warp)
         .def("peak_flops", &HardwareModel::peak_flops,
              py::arg("dt"), py::arg("use_tensor_core") = false)
+        .def("supports_tensor_core", &HardwareModel::supports_tensor_core)
+        .def("roofline_ridge", &HardwareModel::roofline_ridge,
+             py::arg("dt") = DType::F32, py::arg("use_tensor_core") = false)
+        .def("estimate_warps_per_sm", &HardwareModel::estimate_warps_per_sm,
+             py::arg("regs_per_thread"), py::arg("shared_mem_per_block"),
+             py::arg("threads_per_block"))
         .def_static("generic_cpu", &HardwareModel::generic_cpu)
-        .def_static("generic_nvidia_gpu", &HardwareModel::generic_nvidia_gpu);
+        .def_static("generic_nvidia_gpu", &HardwareModel::generic_nvidia_gpu)
+        .def_static("generic_amd_gpu", &HardwareModel::generic_amd_gpu);
 
     py::class_<CostEstimate>(m, "CostEstimate")
         .def_readonly("flops", &CostEstimate::flops)
@@ -1105,6 +1126,273 @@ PYBIND11_MODULE(cantors_gift, m) {
                                   max_benchmarks, initial_random);
     }, py::arg("space"), py::arg("benchmark"),
        py::arg("max_benchmarks") = 20, py::arg("initial_random") = 3);
+
+    // ===================================================================
+    // AnalyticalCostModelV2 (with proper wave quantization + SM utilization)
+    // ===================================================================
+    py::class_<CostFeatures>(m, "CostFeatures")
+        .def(py::init<>())
+        .def_readwrite("flops", &CostFeatures::flops)
+        .def_readwrite("useful_flops", &CostFeatures::useful_flops)
+        .def_readwrite("uses_tensor_core", &CostFeatures::uses_tensor_core)
+        .def_readwrite("bytes_global_load", &CostFeatures::bytes_global_load)
+        .def_readwrite("bytes_global_store", &CostFeatures::bytes_global_store)
+        .def_readwrite("bytes_shared_load", &CostFeatures::bytes_shared_load)
+        .def_readwrite("num_blocks", &CostFeatures::num_blocks)
+        .def_readwrite("num_sms", &CostFeatures::num_sms)
+        .def_readwrite("threads_per_block", &CostFeatures::threads_per_block)
+        .def_readwrite("registers_per_thread", &CostFeatures::registers_per_thread)
+        .def_readwrite("m_tile", &CostFeatures::m_tile)
+        .def_readwrite("n_tile", &CostFeatures::n_tile)
+        .def_readwrite("k_tile", &CostFeatures::k_tile)
+        .def_readwrite("num_pipeline_stages", &CostFeatures::num_pipeline_stages);
+
+    py::class_<AnalyticalCostModelV2::CostBreakdown>(m, "CostBreakdown")
+        .def_readonly("compute_sec", &AnalyticalCostModelV2::CostBreakdown::compute_sec)
+        .def_readonly("memory_global_sec", &AnalyticalCostModelV2::CostBreakdown::memory_global_sec)
+        .def_readonly("memory_shared_sec", &AnalyticalCostModelV2::CostBreakdown::memory_shared_sec)
+        .def_readonly("overlapped_sec", &AnalyticalCostModelV2::CostBreakdown::overlapped_sec)
+        .def_readonly("wave_quant_sec", &AnalyticalCostModelV2::CostBreakdown::wave_quant_sec)
+        .def_readonly("bank_conflict_sec", &AnalyticalCostModelV2::CostBreakdown::bank_conflict_sec)
+        .def_readonly("stall_sec", &AnalyticalCostModelV2::CostBreakdown::stall_sec)
+        .def_readonly("total_sec", &AnalyticalCostModelV2::CostBreakdown::total_sec)
+        .def_readonly("estimated_warps_per_sm", &AnalyticalCostModelV2::CostBreakdown::estimated_warps_per_sm)
+        .def_readonly("estimated_occupancy_pct", &AnalyticalCostModelV2::CostBreakdown::estimated_occupancy_pct)
+        .def_readonly("num_blocks", &AnalyticalCostModelV2::CostBreakdown::num_blocks)
+        .def_readonly("num_sms", &AnalyticalCostModelV2::CostBreakdown::num_sms)
+        .def_readonly("num_waves", &AnalyticalCostModelV2::CostBreakdown::num_waves)
+        .def_readonly("sm_utilization_pct", &AnalyticalCostModelV2::CostBreakdown::sm_utilization_pct)
+        .def_readonly("tail_efficiency_pct", &AnalyticalCostModelV2::CostBreakdown::tail_efficiency_pct)
+        .def_readonly("idle_sms_in_tail", &AnalyticalCostModelV2::CostBreakdown::idle_sms_in_tail);
+
+    py::class_<AnalyticalCostModelV2>(m, "AnalyticalCostModelV2")
+        .def(py::init<HardwareModel>())
+        .def("estimate", &AnalyticalCostModelV2::estimate)
+        .def("estimate_total", &AnalyticalCostModelV2::estimate_total)
+        .def("extract_features", &AnalyticalCostModelV2::extract_features);
+
+    // ===================================================================
+    // MatmulPipeline (end-to-end orchestrator)
+    // ===================================================================
+    py::class_<MatmulPipeline::Config>(m, "MatmulPipelineConfig")
+        .def(py::init<>())
+        .def_readwrite("M", &MatmulPipeline::Config::M)
+        .def_readwrite("K", &MatmulPipeline::Config::K)
+        .def_readwrite("N", &MatmulPipeline::Config::N)
+        .def_readwrite("dtype", &MatmulPipeline::Config::dtype)
+        .def_readwrite("fuse_bias_relu", &MatmulPipeline::Config::fuse_bias_relu)
+        .def_readwrite("m_tiles", &MatmulPipeline::Config::m_tiles)
+        .def_readwrite("n_tiles", &MatmulPipeline::Config::n_tiles)
+        .def_readwrite("k_tiles", &MatmulPipeline::Config::k_tiles)
+        .def_readwrite("vector_widths", &MatmulPipeline::Config::vector_widths)
+        .def_readwrite("max_benchmarks", &MatmulPipeline::Config::max_benchmarks)
+        .def_readwrite("initial_random", &MatmulPipeline::Config::initial_random)
+        .def_readwrite("top_k_prune", &MatmulPipeline::Config::top_k_prune)
+        .def_readwrite("mode", &MatmulPipeline::Config::mode);
+
+    py::class_<CompileTiming>(m, "CompileTiming")
+        .def_readonly("ir_construction_sec", &CompileTiming::ir_construction_sec)
+        .def_readonly("gta_sec", &CompileTiming::gta_sec)
+        .def_readonly("egraph_saturation_sec", &CompileTiming::egraph_saturation_sec)
+        .def_readonly("fusion_sec", &CompileTiming::fusion_sec)
+        .def_readonly("scheduling_sec", &CompileTiming::scheduling_sec)
+        .def_readonly("autotuning_sec", &CompileTiming::autotuning_sec)
+        .def_readonly("codegen_sec", &CompileTiming::codegen_sec)
+        .def_readonly("total_sec", &CompileTiming::total_sec);
+
+    py::class_<RooflineBreakdown>(m, "RooflineBreakdown")
+        .def_readonly("graph_intensity", &RooflineBreakdown::graph_intensity)
+        .def_readonly("kernel_intensity", &RooflineBreakdown::kernel_intensity)
+        .def_readonly("effective_intensity", &RooflineBreakdown::effective_intensity)
+        .def_readonly("ridge_f32", &RooflineBreakdown::ridge_f32)
+        .def_readonly("ridge_f16_tc", &RooflineBreakdown::ridge_f16_tc)
+        .def_readonly("effective_bound", &RooflineBreakdown::effective_bound)
+        .def_readonly("flops", &RooflineBreakdown::flops)
+        .def_readonly("graph_bytes", &RooflineBreakdown::graph_bytes)
+        .def_readonly("kernel_bytes", &RooflineBreakdown::kernel_bytes)
+        .def_readonly("effective_bytes", &RooflineBreakdown::effective_bytes);
+
+    py::class_<MatmulPipelineResult>(m, "MatmulPipelineResult")
+        .def_readonly("best_schedule", &MatmulPipelineResult::best_schedule)
+        .def_readonly("best_runtime_sec", &MatmulPipelineResult::best_runtime_sec)
+        .def_readonly("autotune_history", &MatmulPipelineResult::autotune_history)
+        .def_readonly("autotune_benchmarks", &MatmulPipelineResult::autotune_benchmarks)
+        .def_readonly("analytical_estimate_sec", &MatmulPipelineResult::analytical_estimate_sec)
+        .def_readonly("cost_breakdown", &MatmulPipelineResult::cost_breakdown)
+        .def_readonly("timing", &MatmulPipelineResult::timing)
+        .def_readonly("roofline", &MatmulPipelineResult::roofline)
+        .def_readonly("schedule_space_size", &MatmulPipelineResult::schedule_space_size)
+        .def_readonly("pruned_space_size", &MatmulPipelineResult::pruned_space_size)
+        .def_readonly("uses_tensor_core", &MatmulPipelineResult::uses_tensor_core);
+
+    py::class_<MatmulPipeline>(m, "MatmulPipeline")
+        .def(py::init<HardwareModel, MatmulPipeline::Config>())
+        .def("run_with_analytical_benchmark",
+             &MatmulPipeline::run_with_analytical_benchmark);
+
+    // Extended ArithmeticIntensityAnalysis (new methods).
+    m.attr("_ArithmeticIntensityAnalysis_extras_loaded") = true;
+
+    // ===================================================================
+    // Unified Tensor Analyzer (Tensor Knowledge Graph)
+    // ===================================================================
+    py::enum_<Confidence>(m, "Confidence")
+        .value("Proven", Confidence::Proven)
+        .value("Derived", Confidence::Derived)
+        .value("Estimated", Confidence::Estimated)
+        .value("Profiled", Confidence::Profiled)
+        .value("Speculative", Confidence::Speculative);
+
+    py::enum_<TensorProperty>(m, "TensorProperty")
+        .value("None", TensorProperty::None)
+        .value("Constant", TensorProperty::Constant)
+        .value("Zero", TensorProperty::Zero)
+        .value("One", TensorProperty::One)
+        .value("Identity", TensorProperty::Identity)
+        .value("Diagonal", TensorProperty::Diagonal)
+        .value("Symmetric", TensorProperty::Symmetric)
+        .value("Permutation", TensorProperty::Permutation)
+        .value("BroadcastConst", TensorProperty::BroadcastConst)
+        .value("Sparse", TensorProperty::Sparse)
+        .value("BlockSparse", TensorProperty::BlockSparse)
+        .value("TriangularLower", TensorProperty::TriangularLower)
+        .value("TriangularUpper", TensorProperty::TriangularUpper)
+        .value("Dense", TensorProperty::Dense);
+
+    py::enum_<AliasKind>(m, "AliasKind")
+        .value("NoAlias", AliasKind::NoAlias)
+        .value("MayAlias", AliasKind::MayAlias)
+        .value("MustAlias", AliasKind::MustAlias);
+
+    py::enum_<DependenceKind>(m, "DependenceKind")
+        .value("Full", DependenceKind::Full)
+        .value("Slice", DependenceKind::Slice)
+        .value("Reduction", DependenceKind::Reduction)
+        .value("Broadcast", DependenceKind::Broadcast)
+        .value("LayoutOnly", DependenceKind::LayoutOnly);
+
+    py::class_<AnalyzerMetrics>(m, "AnalyzerMetrics")
+        .def_readonly("iterations", &AnalyzerMetrics::iterations)
+        .def_readonly("facts_discovered", &AnalyzerMetrics::facts_discovered)
+        .def_readonly("worklist_processed", &AnalyzerMetrics::worklist_processed)
+        .def_readonly("latency_sec", &AnalyzerMetrics::latency_sec)
+        .def_readonly("contradictions", &AnalyzerMetrics::contradictions)
+        .def_readonly("mean_prediction_error", &AnalyzerMetrics::mean_prediction_error)
+        .def_readonly("predictions_evaluated", &AnalyzerMetrics::predictions_evaluated);
+
+    py::class_<FusionBenefitReport>(m, "FusionBenefitReport")
+        .def_readonly("can_fuse", &FusionBenefitReport::can_fuse)
+        .def_readonly("legality_reason", &FusionBenefitReport::legality_reason)
+        .def_readonly("saved_bytes", &FusionBenefitReport::saved_bytes)
+        .def_readonly("saved_kernel_launches", &FusionBenefitReport::saved_kernel_launches)
+        .def_readonly("saved_runtime_sec", &FusionBenefitReport::saved_runtime_sec)
+        .def_readonly("added_register_pressure", &FusionBenefitReport::added_register_pressure)
+        .def_readonly("occupancy_delta_pct", &FusionBenefitReport::occupancy_delta_pct)
+        .def_readonly("critical_path_delta_pct", &FusionBenefitReport::critical_path_delta_pct)
+        .def_readonly("net_predicted_improvement", &FusionBenefitReport::net_predicted_improvement)
+        .def_readonly("confidence", &FusionBenefitReport::confidence);
+
+    py::class_<UnifiedAnalyzer>(m, "UnifiedAnalyzer")
+        .def(py::init<Module&>())
+        .def("set_hardware", &UnifiedAnalyzer::set_hardware)
+        .def("set_numerical_mode", &UnifiedAnalyzer::set_numerical_mode)
+        .def("add_default_propagators", &UnifiedAnalyzer::add_default_propagators)
+        .def("run", &UnifiedAnalyzer::run, py::return_value_policy::reference)
+        .def("run_one_iteration", &UnifiedAnalyzer::run_one_iteration)
+        .def("metrics", &UnifiedAnalyzer::metrics, py::return_value_policy::reference)
+        .def("store", [](UnifiedAnalyzer& a) -> FactStore& { return a.store(); },
+             py::return_value_policy::reference);
+
+    py::class_<FactStore>(m, "FactStore")
+        .def("is_zero", &FactStore::is_zero)
+        .def("is_one", &FactStore::is_one)
+        .def("is_identity", &FactStore::is_identity)
+        .def("is_constant", &FactStore::is_constant)
+        .def("is_non_negative", &FactStore::is_non_negative)
+        .def("is_strictly_positive", &FactStore::is_strictly_positive)
+        .def("is_diagonal", &FactStore::is_diagonal)
+        .def("is_sparse", &FactStore::is_sparse)
+        .def("constant_value", &FactStore::constant_value)
+        .def("static_shape", &FactStore::static_shape)
+        .def("dtype_of", &FactStore::dtype_of)
+        .def("can_fuse", &FactStore::can_fuse)
+        .def("fusion_benefit", &FactStore::fusion_benefit)
+        .def("num_tensors", &FactStore::num_tensors)
+        .def("facts_discovered", &FactStore::facts_discovered);
+
+    // ===================================================================
+    // Unified-driven optimization passes
+    // ===================================================================
+    py::class_<PropertyDrivenSimplification, Pass>(m, "PropertyDrivenSimplification")
+        .def(py::init<>())
+        .def("run", &PropertyDrivenSimplification::run)
+        .def("stats", &PropertyDrivenSimplification::stats,
+             py::return_value_policy::reference);
+
+    py::class_<PropertyDrivenSimplification::Stats>(m, "PropertyDrivenSimplificationStats")
+        .def_readonly("mul_zero_eliminated", &PropertyDrivenSimplification::Stats::mul_zero_eliminated)
+        .def_readonly("mul_one_eliminated", &PropertyDrivenSimplification::Stats::mul_one_eliminated)
+        .def_readonly("add_zero_eliminated", &PropertyDrivenSimplification::Stats::add_zero_eliminated)
+        .def_readonly("matmul_identity_eliminated", &PropertyDrivenSimplification::Stats::matmul_identity_eliminated)
+        .def_readonly("total_rewrites", &PropertyDrivenSimplification::Stats::total_rewrites);
+
+    py::class_<RangeDrivenStrengthReduction, Pass>(m, "RangeDrivenStrengthReduction")
+        .def(py::init<>())
+        .def("run", &RangeDrivenStrengthReduction::run)
+        .def("stats", &RangeDrivenStrengthReduction::stats,
+             py::return_value_policy::reference);
+
+    py::class_<RangeDrivenStrengthReduction::Stats>(m, "RangeDrivenStrengthReductionStats")
+        .def_readonly("relu_eliminated", &RangeDrivenStrengthReduction::Stats::relu_eliminated)
+        .def_readonly("total_rewrites", &RangeDrivenStrengthReduction::Stats::total_rewrites);
+
+    py::class_<CostGuidedFusion, Pass>(m, "CostGuidedFusion")
+        .def(py::init<double, Confidence>(),
+             py::arg("min_improvement") = 0.05,
+             py::arg("min_confidence") = Confidence::Estimated)
+        .def("run", &CostGuidedFusion::run)
+        .def("stats", &CostGuidedFusion::stats,
+             py::return_value_policy::reference);
+
+    py::class_<CostGuidedFusion::Stats>(m, "CostGuidedFusionStats")
+        .def_readonly("fusions_accepted", &CostGuidedFusion::Stats::fusions_accepted)
+        .def_readonly("fusions_rejected_cost", &CostGuidedFusion::Stats::fusions_rejected_cost)
+        .def_readonly("fusions_rejected_confidence", &CostGuidedFusion::Stats::fusions_rejected_confidence)
+        .def_readonly("fusions_rejected_legality", &CostGuidedFusion::Stats::fusions_rejected_legality)
+        .def_readonly("total_predicted_improvement", &CostGuidedFusion::Stats::total_predicted_improvement);
+
+    py::class_<LayoutAwareCopyElimination, Pass>(m, "LayoutAwareCopyElimination")
+        .def(py::init<>())
+        .def("run", &LayoutAwareCopyElimination::run)
+        .def("stats", &LayoutAwareCopyElimination::stats,
+             py::return_value_policy::reference);
+
+    py::class_<LayoutAwareCopyElimination::Stats>(m, "LayoutAwareCopyEliminationStats")
+        .def_readonly("transpose_transpose_eliminated", &LayoutAwareCopyElimination::Stats::transpose_transpose_eliminated)
+        .def_readonly("total_rewrites", &LayoutAwareCopyElimination::Stats::total_rewrites);
+
+    py::class_<AliasAwareMemoryPlanning, Pass>(m, "AliasAwareMemoryPlanning")
+        .def(py::init<>())
+        .def("run", &AliasAwareMemoryPlanning::run)
+        .def("stats", &AliasAwareMemoryPlanning::stats,
+             py::return_value_policy::reference);
+
+    py::class_<AliasAwareMemoryPlanning::Stats>(m, "AliasAwareMemoryPlanningStats")
+        .def_readonly("buffers_merged", &AliasAwareMemoryPlanning::Stats::buffers_merged)
+        .def_readonly("bytes_saved", &AliasAwareMemoryPlanning::Stats::bytes_saved);
+
+    py::class_<UnifiedOptimizationPipeline, Pass>(m, "UnifiedOptimizationPipeline")
+        .def(py::init<>())
+        .def("run", &UnifiedOptimizationPipeline::run)
+        .def("stats", &UnifiedOptimizationPipeline::stats,
+             py::return_value_policy::reference);
+
+    py::class_<UnifiedOptimizationPipeline::Stats>(m, "UnifiedOptimizationPipelineStats")
+        .def_readonly("property", &UnifiedOptimizationPipeline::Stats::property)
+        .def_readonly("range", &UnifiedOptimizationPipeline::Stats::range)
+        .def_readonly("fusion", &UnifiedOptimizationPipeline::Stats::fusion)
+        .def_readonly("layout", &UnifiedOptimizationPipeline::Stats::layout)
+        .def_readonly("alias", &UnifiedOptimizationPipeline::Stats::alias);
 
     // ===================================================================
     // Runtime
