@@ -44,6 +44,19 @@ struct CompileTask {
     //   "elementwise_chain" : C = relu(gelu(sigmoid(tanh(...(x)...)))
     //                          (depth from `chain_depth`)
     //   "reduction"         : C = reduce_sum(x, axis=1)
+    //
+    // Brain-domain workloads (each builds a small cluster of brain
+    // semantic primitives — see include/cg/brain/brain_builder.hpp):
+    //   "brain_distance_reuse"     : the d²-reuse pattern (K_x, K_inh,
+    //                                B_ij, τ_delay all share one d²).
+    //                                This is the canonical test of the
+    //                                existing CSE pass on brain ops.
+    //   "brain_credit_assignment" : CreditPropagate + EligibilityUpdate
+    //   "brain_event_driven"      : NeighborQuery + ActiveSet +
+    //                                SynapticArrival
+    //   "brain_full"              : all of the above, fused into one
+    //                                kernel, ending with a Spike and
+    //                                StructuralEpoch marker.
     std::string kind = "matmul_bias_relu";
 
     // Shape (used by matmul* kinds).
@@ -53,6 +66,27 @@ struct CompileTask {
 
     // Elementwise chain depth (used by "elementwise_chain").
     u32 chain_depth = 10;
+
+    // Brain-domain shape parameters.
+    //   N        : number of neurons (reuses the `N` field above)
+    //   D        : spatial dimensionality (typically 3)
+    //   E        : number of synaptic events per step
+    //   R        : number of regions (for region_aggregate)
+    //   topk     : size of active set + max neighbors
+    u64 D = 3;
+    u64 E = 256;
+    u64 R = 8;
+    u64 topk = 32;
+
+    // Brain-domain scalar hyperparameters.
+    double sigma_x    = 0.5;     // affinity Gaussian width
+    double sigma_inh  = 0.3;     // inhibition Gaussian width
+    double g0         = 1.0;     // inhibition amplitude
+    double tau0       = 0.001;   // base synaptic delay (s)
+    double inv_speed  = 0.005;   // 1 / conduction velocity (s per unit distance)
+    double dt         = 0.001;   // eligibility update timestep
+    double tau_e      = 0.1;     // eligibility decay constant
+    double radius     = 0.4;     // neighbor query radius
 
     // Data type.
     DType dtype = DType::F32;

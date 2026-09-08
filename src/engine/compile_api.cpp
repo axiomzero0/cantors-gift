@@ -12,6 +12,7 @@
 #include "cg/engine/compile_api.hpp"
 
 #include "cg/analysis/arithmetic_intensity.hpp"
+#include "cg/brain/brain_builder.hpp"
 #include "cg/cost/cost_model_v2.hpp"
 #include "cg/ir/builder.hpp"
 #include "cg/ir/ops.hpp"
@@ -109,6 +110,164 @@ std::shared_ptr<Module> build_reduction_ir(const CompileTask& task) {
     return m;
 }
 
+// ---------------------------------------------------------------------------
+// Brain-domain IR builders.
+//
+// Each `brain_*` workload kind maps to one builder. The builders emit
+// the brain semantic primitives (PairwiseDistSq, GaussianKernel, ...)
+// plus any necessary inputs/outputs, and return a Module that the
+// existing IterativeDriver optimizes.
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<Module> build_brain_distance_reuse_ir(const CompileTask& task) {
+    auto m = std::make_shared<Module>();
+    auto N = static_cast<i64>(task.N);
+    auto D = static_cast<i64>(task.D);
+    // Inputs: positions [N, D].
+    // Outputs: Kx [N,N], Kinh [N,N], Affinity [N,N], Delay [N,N]
+    auto f = m->create_function(
+        "brain_distance_reuse",
+        {make_tensor_type({N, D}, task.dtype)},
+        {make_tensor_type({N, N}, task.dtype),
+         make_tensor_type({N, N}, task.dtype),
+         make_tensor_type({N, N}, task.dtype),
+         make_tensor_type({N, N}, task.dtype)});
+    Builder b(f);
+    auto positions = f->args()[0];
+    auto pattern = brain::build_distance_reuse_pattern(
+        b, positions,
+        task.sigma_x, task.sigma_inh, task.g0,
+        task.tau0, task.inv_speed);
+    b.output_tensor(pattern.kx);
+    b.output_tensor(pattern.k_inh);
+    b.output_tensor(pattern.affinity);
+    b.output_tensor(pattern.delay);
+    return m;
+}
+
+std::shared_ptr<Module> build_brain_credit_assignment_ir(const CompileTask& task) {
+    auto m = std::make_shared<Module>();
+    auto N = static_cast<i64>(task.N);
+    auto f = m->create_function(
+        "brain_credit_assignment",
+        {make_tensor_type({N, N}, task.dtype),
+         make_tensor_type({N},    task.dtype),
+         make_tensor_type({N, N}, task.dtype)},
+        {make_tensor_type({N},    task.dtype),
+         make_tensor_type({N, N}, task.dtype)});
+    Builder b(f);
+    auto w  = f->args()[0];
+    auto c  = f->args()[1];
+    auto pe = f->args()[2];
+    auto pattern = brain::build_credit_assignment_pattern(
+        b, w, c, pe, task.dt, task.tau_e);
+    b.output_tensor(pattern.credits);
+    b.output_tensor(pattern.eligibility);
+    return m;
+}
+
+std::shared_ptr<Module> build_brain_event_driven_ir(const CompileTask& task) {
+    auto m = std::make_shared<Module>();
+    auto N = static_cast<i64>(task.N);
+    auto D = static_cast<i64>(task.D);
+    auto E = static_cast<i64>(task.E);
+    auto K = static_cast<i64>(task.topk);
+    // Neighbor indices: [N, K] I32
+    // Active set:       [K]   I32
+    // Synaptic current: [N]   F32
+    auto f = m->create_function(
+        "brain_event_driven",
+        {make_tensor_type({N, D}, task.dtype),
+         make_tensor_type({N, N}, task.dtype),
+         make_tensor_type({E, 3}, task.dtype),
+         make_tensor_type({N},    task.dtype)},
+        {make_tensor_type({N, K}, DType::I32),
+         make_tensor_type({K},    DType::I32),
+         make_tensor_type({N},    task.dtype)});
+    Builder b(f);
+    auto positions   = f->args()[0];
+    auto weights     = f->args()[1];
+    auto events      = f->args()[2];
+    auto activations = f->args()[3];
+    auto pattern = brain::build_event_driven_pattern(
+        b, positions, weights, events, activations,
+        task.radius, static_cast<i64>(task.topk),
+        static_cast<i64>(task.topk));
+    b.output_tensor(pattern.neighbors);
+    b.output_tensor(pattern.active);
+    b.output_tensor(pattern.current);
+    return m;
+}
+
+std::shared_ptr<Module> build_brain_full_ir(const CompileTask& task) {
+    // The "brain_full" workload is the whole brain ML step in one
+    // kernel: distance-reuse pattern + credit assignment + event
+    // driven, ending with a Spike event and a StructuralEpoch marker.
+    // Every brain primitive's result is wired to an output so the test
+    // suite can verify that DCE preserves them all (the side-effecting
+    // spike / structural_epoch survive regardless).
+    auto m = std::make_shared<Module>();
+    auto N = static_cast<i64>(task.N);
+    auto D = static_cast<i64>(task.D);
+    auto E = static_cast<i64>(task.E);
+    auto K = static_cast<i64>(task.topk);
+    auto f = m->create_function(
+        "brain_full",
+        {make_tensor_type({N, D}, task.dtype),   // positions
+         make_tensor_type({N, N}, task.dtype),    // weights
+         make_tensor_type({E, 3}, task.dtype),   // events
+         make_tensor_type({N},    task.dtype),   // activations
+         make_tensor_type({N},    task.dtype),    // input credits
+         make_tensor_type({N, N}, task.dtype)},   // eligibility
+        {make_tensor_type({N, N}, task.dtype),    // Kx
+         make_tensor_type({N, N}, task.dtype),    // K_inh
+         make_tensor_type({N, N}, task.dtype),    // Affinity
+         make_tensor_type({N, N}, task.dtype),    // Delay
+         make_tensor_type({N, K}, DType::I32),   // neighbors
+         make_tensor_type({K},    DType::I32),    // active set
+         make_tensor_type({N},    task.dtype),    // Synaptic current
+         make_tensor_type({N},    task.dtype),    // Propagated credits
+         make_tensor_type({N, N}, task.dtype)});  // Updated eligibility
+    Builder b(f);
+
+    auto positions   = f->args()[0];
+    auto weights      = f->args()[1];
+    auto events       = f->args()[2];
+    auto activations  = f->args()[3];
+    auto in_credits   = f->args()[4];
+    auto eligibility  = f->args()[5];
+
+    auto dist = brain::build_distance_reuse_pattern(
+        b, positions, task.sigma_x, task.sigma_inh, task.g0,
+        task.tau0, task.inv_speed);
+    auto cred = brain::build_credit_assignment_pattern(
+        b, weights, in_credits, eligibility, task.dt, task.tau_e);
+    auto ev = brain::build_event_driven_pattern(
+        b, positions, weights, events, activations,
+        task.radius, static_cast<i64>(task.topk),
+        static_cast<i64>(task.topk));
+
+    // Emit a spike event (the activation threshold is implicit; the
+    // semantic op just records that a spike happened at time t).
+    // For the test we use a constant scalar 0.0 for t.
+    auto t_const = b.constant_tensor(Shape::from_constants({}), task.dtype);
+    b.spike(activations, t_const);
+
+    // Mark the end of the structural plasticity epoch.
+    b.structural_epoch();
+
+    b.output_tensor(dist.kx);
+    b.output_tensor(dist.k_inh);
+    b.output_tensor(dist.affinity);
+    b.output_tensor(dist.delay);
+    b.output_tensor(ev.neighbors);
+    b.output_tensor(ev.active);
+    b.output_tensor(ev.current);
+    b.output_tensor(cred.credits);
+    b.output_tensor(cred.eligibility);
+    return m;
+}
+
 std::shared_ptr<Module> build_ir(const CompileTask& task) {
     if (task.kind == "matmul" || task.kind == "matmul_bias" ||
         task.kind == "matmul_bias_relu" || task.kind == "matmul_bias_gelu") {
@@ -119,6 +278,18 @@ std::shared_ptr<Module> build_ir(const CompileTask& task) {
     }
     if (task.kind == "reduction") {
         return build_reduction_ir(task);
+    }
+    if (task.kind == "brain_distance_reuse") {
+        return build_brain_distance_reuse_ir(task);
+    }
+    if (task.kind == "brain_credit_assignment") {
+        return build_brain_credit_assignment_ir(task);
+    }
+    if (task.kind == "brain_event_driven") {
+        return build_brain_event_driven_ir(task);
+    }
+    if (task.kind == "brain_full") {
+        return build_brain_full_ir(task);
     }
     return nullptr;
 }

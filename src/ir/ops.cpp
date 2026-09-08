@@ -696,6 +696,285 @@ void OpRegistry::register_builtins() {
         };
         reg(std::move(i));
     }
+
+    // ===================================================================
+    // Brain-domain semantic primitives.
+    //
+    // These are the high-level ops for the mutable spatial neural graph
+    // ML domain. They are all pure (CSE/fusion-safe) unless marked
+    // otherwise. Each op takes its inputs as operands and any tuning
+    // constants (σ, g0, τ0, radius, ...) as attributes — this keeps
+    // the operand signature small while letting the CSE pass dedupe
+    // based on (opcode, operands, attrs).
+    //
+    // Output shape conventions:
+    //   - PairwiseDistSq(x):           [N, N]   from x: [N, D]
+    //   - NeighborQuery(x, r):          [N, K]   (K = max_neighbors)
+    //   - GaussianKernel(d², σ):       [N, N]   from d²: [N, N]
+    //   - LateralInhibition(d², σ):    [N, N]
+    //   - DelayFromDist(d², τ0, v):    [N, N]
+    //   - SynapticArrival(events, w):  [N]      from events: [E, 3], w: [N, N]
+    //   - EligibilityUpdate(p, dt):    [N, N]   same shape as p
+    //   - CreditPropagate(w, c):       [N]      from w: [N, N], c: [N]
+    //   - ActiveSet(x, K):              [N, K]   (K = topk)
+    //   - RegionAggregate(x, r):       [R]      (R = num_regions)
+    //   - Spike(v, t):                  void     (event emission)
+    //   - StructuralEpoch():           void     (epoch marker)
+    // ===================================================================
+
+    // ---- PairwiseDistSq: d_ij² = Σ_k (x_i,k - x_j,k)² ----
+    // The reusable value. Multiple downstream kernels (GaussianKernel,
+    // LateralInhibition, DelayFromDist) consume this same op, and the
+    // existing CSE pass automatically collapses the duplicates.
+    {
+        OpInfo i;
+        i.opcode = OP_PAIRWISE_DIST_SQ; i.name = "pairwise_dist_sq";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict&,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 1) {
+                if (err) *err = "pairwise_dist_sq: expected 1 operand (positions x:[N,D])";
+                return {};
+            }
+            auto x = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!x || x->shape.rank() != 2) {
+                if (err) *err = "pairwise_dist_sq: operand must be a 2D tensor [N,D]";
+                return {};
+            }
+            i64 N = x->shape[0]->is_constant() ? x->shape[0]->value : 0;
+            return { make_tensor_type(Shape::from_constants({N, N}), x->dtype, x->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- NeighborQuery: N_r(i) = { j : |x_i-x_j|² < r² } ----
+    // Produces a fixed-size [N, K] tensor of neighbor indices (padded
+    // with -1 for missing neighbors). The semantic intent is sparse
+    // adjacency; the compiler is free to lower it to a grid / hashed
+    // grid / octree / brute-force SIMD as the cost model dictates.
+    {
+        OpInfo i;
+        i.opcode = OP_NEIGHBOR_QUERY; i.name = "neighbor_query";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::MemoryRead);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 1) {
+                if (err) *err = "neighbor_query: expected 1 operand (positions x:[N,D])";
+                return {};
+            }
+            auto x = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!x || x->shape.rank() != 2) {
+                if (err) *err = "neighbor_query: operand must be a 2D tensor [N,D]";
+                return {};
+            }
+            i64 N = x->shape[0]->is_constant() ? x->shape[0]->value : 0;
+            // K = max_neighbors attribute (default 32).
+            i64 K = 32;
+            if (auto a = attrs.get("max_neighbors"); a && a->kind == AttrKind::Integer)
+                K = a->integer;
+            // The radius is purely an attribute (it affects the *result*
+            // value but not the shape). CSE will treat two neighbor_query
+            // ops with the same x and same radius as duplicates.
+            return { make_tensor_type(Shape::from_constants({N, K}), DType::I32, x->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- GaussianKernel: k(d², σ) = exp(-d² / (2σ²)) ----
+    // Pure op applied to a distance² tensor. Multiple GaussianKernel
+    // ops with different σ but the same d² operand are NOT collapsed
+    // (different attrs); only ops with identical (d², σ) get CSE'd.
+    {
+        OpInfo i;
+        i.opcode = OP_GAUSSIAN_KERNEL; i.name = "gaussian_kernel";
+        i.traits = OpTraits().with(OpTrait::Pure)
+                              .with(OpTrait::Elementwise)
+                              .with(OpTrait::ShapePreserving);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- LateralInhibition: g_ij^inh = g0 * exp(-d² / (2σ_inh²)) ----
+    // Same shape as d². Conceptually: g0 * GaussianKernel(d², σ_inh).
+    // We keep it as a separate op so downstream semantic analyses
+    // (e.g. "is this an inhibitory weight?") can see the intent.
+    {
+        OpInfo i;
+        i.opcode = OP_LATERAL_INHIBITION; i.name = "lateral_inhibition";
+        i.traits = OpTraits().with(OpTrait::Pure)
+                              .with(OpTrait::Elementwise)
+                              .with(OpTrait::ShapePreserving);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- DelayFromDist: τ_ij = τ0 + sqrt(d²) * inv_speed ----
+    // Same shape as d². Pure; can be CSE'd / fused with downstream
+    // uses of τ.
+    {
+        OpInfo i;
+        i.opcode = OP_DELAY_FROM_DIST; i.name = "delay_from_dist";
+        i.traits = OpTraits().with(OpTrait::Pure)
+                              .with(OpTrait::Elementwise)
+                              .with(OpTrait::ShapePreserving);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- SynapticArrival: aggregate incoming spike events ----
+    // events: [E, 3] = (i, j, t)  ->  output: [N]  summed current per neuron
+    {
+        OpInfo i;
+        i.opcode = OP_SYNAPTIC_ARRIVAL; i.name = "synaptic_arrival";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict&,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 2) {
+                if (err) *err = "synaptic_arrival: expected 2 operands (events:[E,3], weights:[N,N])";
+                return {};
+            }
+            auto w = std::dynamic_pointer_cast<const TensorType>(operands[1]);
+            if (!w || w->shape.rank() != 2) {
+                if (err) *err = "synaptic_arrival: weights must be 2D [N,N]";
+                return {};
+            }
+            i64 N = w->shape[0]->is_constant() ? w->shape[0]->value : 0;
+            return { make_tensor_type(Shape::from_constants({N}), w->dtype, w->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- EligibilityUpdate: P_ij ← P_ij * exp(-Δt / τ_e) ----
+    // Same shape as P. Pure (returns new tensor); caller can scatter.
+    {
+        OpInfo i;
+        i.opcode = OP_ELIGIBILITY_UPDATE; i.name = "eligibility_update";
+        i.traits = OpTraits().with(OpTrait::Pure)
+                              .with(OpTrait::Elementwise)
+                              .with(OpTrait::ShapePreserving);
+        i.effects = EffectSet::pure();
+        i.infer_types = infer_unary_same_types;
+        reg(std::move(i));
+    }
+
+    // ---- CreditPropagate: C_i ← Σ_j w_ij * c_j ----
+    // w: [N, N], c: [N]  ->  C: [N]  (essentially a matvec, but kept
+    // as a separate op so semantic credit-assignment analyses can see it).
+    {
+        OpInfo i;
+        i.opcode = OP_CREDIT_PROPAGATE; i.name = "credit_propagate";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict&,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 2) {
+                if (err) *err = "credit_propagate: expected 2 operands (w:[N,N], c:[N])";
+                return {};
+            }
+            auto w = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!w || w->shape.rank() != 2) {
+                if (err) *err = "credit_propagate: weights must be 2D [N,N]";
+                return {};
+            }
+            i64 N = w->shape[0]->is_constant() ? w->shape[0]->value : 0;
+            return { make_tensor_type(Shape::from_constants({N}), w->dtype, w->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- ActiveSet: top-K sparse activation ----
+    // x: [N]  ->  indices: [K]  (K = topk attribute)
+    {
+        OpInfo i;
+        i.opcode = OP_ACTIVE_SET; i.name = "active_set";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 1) {
+                if (err) *err = "active_set: expected 1 operand (activations x:[N])";
+                return {};
+            }
+            auto x = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!x || x->shape.rank() != 1) {
+                if (err) *err = "active_set: operand must be 1D [N]";
+                return {};
+            }
+            i64 K = 32;
+            if (auto a = attrs.get("topk"); a && a->kind == AttrKind::Integer)
+                K = a->integer;
+            return { make_tensor_type(Shape::from_constants({K}), DType::I32, x->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- RegionAggregate: region-level reduction ----
+    // x: [N], region_ids: [N]  ->  output: [R]
+    // R = num_regions attribute.
+    {
+        OpInfo i;
+        i.opcode = OP_REGION_AGGREGATE; i.name = "region_aggregate";
+        i.traits = OpTraits().with(OpTrait::Pure).with(OpTrait::Reduction);
+        i.effects = EffectSet::pure();
+        i.infer_types = [](Span<const TypePtr> operands,
+                           const AttributeDict& attrs,
+                           std::string* err) -> std::vector<TypePtr> {
+            if (operands.size() != 2) {
+                if (err) *err = "region_aggregate: expected 2 operands (x:[N], region_ids:[N])";
+                return {};
+            }
+            auto x = std::dynamic_pointer_cast<const TensorType>(operands[0]);
+            if (!x) {
+                if (err) *err = "region_aggregate: operand must be a tensor";
+                return {};
+            }
+            i64 R = 8;
+            if (auto a = attrs.get("num_regions"); a && a->kind == AttrKind::Integer)
+                R = a->integer;
+            return { make_tensor_type(Shape::from_constants({R}), x->dtype, x->device) };
+        };
+        reg(std::move(i));
+    }
+
+    // ---- Spike: discrete event emission ----
+    // Side-effecting op: emits a (i, t) spike event. Returns no value.
+    {
+        OpInfo i;
+        i.opcode = OP_SPIKE; i.name = "spike";
+        i.traits = OpTraits().with(OpTrait::HasSideEffect);
+        i.effects = EffectSet(static_cast<u16>(EffectKind::HasSideEffect));
+        i.infer_types = [](Span<const TypePtr>, const AttributeDict&, std::string*) {
+            return std::vector<TypePtr>{};  // returns nothing
+        };
+        reg(std::move(i));
+    }
+
+    // ---- StructuralEpoch: structural plasticity epoch marker ----
+    // Side-effecting marker op; acts as a barrier across which the
+    // structural plasticity passes may run. Pure dataflow cannot be
+    // reordered across it.
+    {
+        OpInfo i;
+        i.opcode = OP_STRUCTURAL_EPOCH; i.name = "structural_epoch";
+        i.traits = OpTraits().with(OpTrait::HasSideEffect);
+        i.effects = EffectSet(static_cast<u16>(EffectKind::HasSideEffect) |
+                              static_cast<u16>(EffectKind::Synchronize));
+        i.infer_types = [](Span<const TypePtr>, const AttributeDict&, std::string*) {
+            return std::vector<TypePtr>{};
+        };
+        reg(std::move(i));
+    }
 }
 
 Opcode register_user_op(OpInfo info) {

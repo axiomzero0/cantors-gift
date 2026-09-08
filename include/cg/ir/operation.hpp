@@ -88,6 +88,33 @@ constexpr Opcode OP_KERNEL_CALL   = 35;     // call into a lowered kernel
 constexpr Opcode OP_ALLOC         = 36;     // raw allocation (Memory IR)
 constexpr Opcode OP_FREE          = 37;     // raw deallocation
 constexpr Opcode OP_REUSE         = 38;     // buffer reuse marker
+
+// ---- Brain-domain semantic primitives -------------------------------
+// These are the high-level semantic ops for the mutable spatial neural
+// graph ML domain. They stay pure (no side effects) unless explicitly
+// marked otherwise, so the existing CSE / fusion / e-graph machinery
+// can optimize them just like any other tensor op.
+//
+// Design note: the key optimization opportunity is that a single
+// PairwiseDistSq(x) is consumed by multiple downstream kernels
+// (GaussianKernel, LateralInhibition, DelayFromDist). Because all of
+// those ops take the same `d2` Value as operand, the existing CSE pass
+// collapses the redundant distance computations to one. We do NOT
+// need a new IR architecture for this — the existing one already
+// handles it via opcode+operands+attrs deduplication.
+constexpr Opcode OP_NEIGHBOR_QUERY     = 40; // N_r(i) = { j : |x_i-x_j|² < r² }      (sparse adjacency)
+constexpr Opcode OP_PAIRWISE_DIST_SQ   = 41; // d_ij² = Σ (x_i,k - x_j,k)²             (the reusable value)
+constexpr Opcode OP_GAUSSIAN_KERNEL    = 42; // k(d², σ) = exp(-d² / (2σ²))            (pure, applied to d²)
+constexpr Opcode OP_LATERAL_INHIBITION = 43; // g_ij^inh = g0 * exp(-d² / (2σ_inh²))   (applied to d²)
+constexpr Opcode OP_DELAY_FROM_DIST    = 44; // τ_ij = τ0 + sqrt(d²) * inv_speed       (applied to d²)
+constexpr Opcode OP_SPIKE              = 45; // spike(i, t) — discrete event emission   (has side-effect)
+constexpr Opcode OP_SYNAPTIC_ARRIVAL   = 46; // synaptic arrival event aggregation
+constexpr Opcode OP_ELIGIBILITY_UPDATE= 47; // P_ij ← P_ij * exp(-Δt / τ_e)
+constexpr Opcode OP_CREDIT_PROPAGATE   = 48; // C_i ← Σ_j w_ij * c_j
+constexpr Opcode OP_ACTIVE_SET         = 49; // top-K sparse activation selection
+constexpr Opcode OP_REGION_AGGREGATE   = 50; // region-level reduction over neurons
+constexpr Opcode OP_STRUCTURAL_EPOCH   = 51; // structural plasticity epoch marker     (has side-effect)
+
 constexpr Opcode OP_USER_BEGIN    = 0x1000;
 
 class Operation {

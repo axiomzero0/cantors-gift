@@ -530,7 +530,41 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def("slice", &Builder::slice)
         .def("sigmoid", &Builder::sigmoid)
         .def("tanh", &Builder::tanh)
-        .def("log", &Builder::log);
+        .def("log", &Builder::log)
+        // ----- brain-domain semantic primitives -----
+        .def("pairwise_dist_sq", &Builder::pairwise_dist_sq)
+        .def("neighbor_query", &Builder::neighbor_query,
+             py::arg("x"), py::arg("radius"), py::arg("max_neighbors") = 32)
+        .def("gaussian_kernel", &Builder::gaussian_kernel,
+             py::arg("d2"), py::arg("sigma"))
+        .def("lateral_inhibition", &Builder::lateral_inhibition,
+             py::arg("d2"), py::arg("g0"), py::arg("sigma_inh"))
+        .def("delay_from_dist", &Builder::delay_from_dist,
+             py::arg("d2"), py::arg("tau0"), py::arg("inv_speed"))
+        .def("synaptic_arrival", &Builder::synaptic_arrival)
+        .def("eligibility_update", &Builder::eligibility_update,
+             py::arg("p"), py::arg("dt"), py::arg("tau_e"))
+        .def("credit_propagate", &Builder::credit_propagate)
+        .def("active_set", &Builder::active_set)
+        .def("region_aggregate", &Builder::region_aggregate,
+             py::arg("x"), py::arg("region_ids"), py::arg("num_regions"))
+        .def("spike", &Builder::spike)
+        .def("structural_epoch", &Builder::structural_epoch);
+
+    // Brain-domain opcodes (so Python users can construct ops manually
+    // without having to remember the integer values).
+    m.attr("OP_NEIGHBOR_QUERY")      = OP_NEIGHBOR_QUERY;
+    m.attr("OP_PAIRWISE_DIST_SQ")    = OP_PAIRWISE_DIST_SQ;
+    m.attr("OP_GAUSSIAN_KERNEL")     = OP_GAUSSIAN_KERNEL;
+    m.attr("OP_LATERAL_INHIBITION")  = OP_LATERAL_INHIBITION;
+    m.attr("OP_DELAY_FROM_DIST")     = OP_DELAY_FROM_DIST;
+    m.attr("OP_SPIKE")               = OP_SPIKE;
+    m.attr("OP_SYNAPTIC_ARRIVAL")    = OP_SYNAPTIC_ARRIVAL;
+    m.attr("OP_ELIGIBILITY_UPDATE")  = OP_ELIGIBILITY_UPDATE;
+    m.attr("OP_CREDIT_PROPAGATE")    = OP_CREDIT_PROPAGATE;
+    m.attr("OP_ACTIVE_SET")          = OP_ACTIVE_SET;
+    m.attr("OP_REGION_AGGREGATE")    = OP_REGION_AGGREGATE;
+    m.attr("OP_STRUCTURAL_EPOCH")    = OP_STRUCTURAL_EPOCH;
 
     // ===================================================================
     // Printer
@@ -1410,6 +1444,20 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def_readwrite("K", &CompileTask::K)
         .def_readwrite("N", &CompileTask::N)
         .def_readwrite("chain_depth", &CompileTask::chain_depth)
+        // Brain-domain shape parameters
+        .def_readwrite("D", &CompileTask::D)
+        .def_readwrite("E", &CompileTask::E)
+        .def_readwrite("R", &CompileTask::R)
+        .def_readwrite("topk", &CompileTask::topk)
+        // Brain-domain scalar hyperparameters
+        .def_readwrite("sigma_x", &CompileTask::sigma_x)
+        .def_readwrite("sigma_inh", &CompileTask::sigma_inh)
+        .def_readwrite("g0", &CompileTask::g0)
+        .def_readwrite("tau0", &CompileTask::tau0)
+        .def_readwrite("inv_speed", &CompileTask::inv_speed)
+        .def_readwrite("dt", &CompileTask::dt)
+        .def_readwrite("tau_e", &CompileTask::tau_e)
+        .def_readwrite("radius", &CompileTask::radius)
         .def_readwrite("dtype", &CompileTask::dtype)
         .def_readwrite("numerical_mode", &CompileTask::numerical_mode)
         .def_readwrite("hardware", &CompileTask::hardware)

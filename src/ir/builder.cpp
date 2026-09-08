@@ -203,4 +203,71 @@ Value Builder::sigmoid(Value a) { return create(OP_SIGMOID, {a})->results[0]; }
 Value Builder::tanh(Value a)    { return create(OP_TANH, {a})->results[0]; }
 Value Builder::log(Value a)     { return create(OP_LOG, {a})->results[0]; }
 
+// ---------- Brain-domain semantic primitives ----------
+Value Builder::pairwise_dist_sq(Value x) {
+    return create(OP_PAIRWISE_DIST_SQ, {x})->results[0];
+}
+
+Value Builder::neighbor_query(Value x, double radius, i64 max_neighbors) {
+    AttributeDict attrs;
+    attrs.set("radius", Attribute::make_float(radius));
+    attrs.set("max_neighbors", Attribute::make_integer(max_neighbors));
+    return create(OP_NEIGHBOR_QUERY, {x}, std::move(attrs))->results[0];
+}
+
+Value Builder::gaussian_kernel(Value d2, double sigma) {
+    AttributeDict attrs;
+    attrs.set("sigma", Attribute::make_float(sigma));
+    return create(OP_GAUSSIAN_KERNEL, {d2}, std::move(attrs))->results[0];
+}
+
+Value Builder::lateral_inhibition(Value d2, double g0, double sigma_inh) {
+    AttributeDict attrs;
+    attrs.set("g0", Attribute::make_float(g0));
+    attrs.set("sigma_inh", Attribute::make_float(sigma_inh));
+    return create(OP_LATERAL_INHIBITION, {d2}, std::move(attrs))->results[0];
+}
+
+Value Builder::delay_from_dist(Value d2, double tau0, double inv_speed) {
+    AttributeDict attrs;
+    attrs.set("tau0", Attribute::make_float(tau0));
+    attrs.set("inv_speed", Attribute::make_float(inv_speed));
+    return create(OP_DELAY_FROM_DIST, {d2}, std::move(attrs))->results[0];
+}
+
+Value Builder::synaptic_arrival(Value events, Value weights) {
+    return create(OP_SYNAPTIC_ARRIVAL, {events, weights})->results[0];
+}
+
+Value Builder::eligibility_update(Value p, double dt, double tau_e) {
+    AttributeDict attrs;
+    attrs.set("dt", Attribute::make_float(dt));
+    attrs.set("tau_e", Attribute::make_float(tau_e));
+    return create(OP_ELIGIBILITY_UPDATE, {p}, std::move(attrs))->results[0];
+}
+
+Value Builder::credit_propagate(Value weights, Value credits) {
+    return create(OP_CREDIT_PROPAGATE, {weights, credits})->results[0];
+}
+
+Value Builder::active_set(Value x, i64 topk) {
+    AttributeDict attrs;
+    attrs.set("topk", Attribute::make_integer(topk));
+    return create(OP_ACTIVE_SET, {x}, std::move(attrs))->results[0];
+}
+
+Value Builder::region_aggregate(Value x, Value region_ids, i64 num_regions) {
+    AttributeDict attrs;
+    attrs.set("num_regions", Attribute::make_integer(num_regions));
+    return create(OP_REGION_AGGREGATE, {x, region_ids}, std::move(attrs))->results[0];
+}
+
+void Builder::spike(Value activations, Value t) {
+    create(OP_SPIKE, {activations, t}, {});
+}
+
+void Builder::structural_epoch() {
+    create(OP_STRUCTURAL_EPOCH, {}, {});
+}
+
 } // namespace cg
