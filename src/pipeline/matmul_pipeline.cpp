@@ -148,15 +148,19 @@ EClassId MatmulPipeline::run_egraph(std::chrono::steady_clock::time_point& t0,
 
     // Build e-graph nodes for: relu(matmul(A, B) + bias)
     // (or just matmul(A, B) if no epilogue).
-    auto A = g.add({"var", {}, cfg_.dtype, {}});
-    auto B = g.add({"var", {}, cfg_.dtype, {}});
-    auto mm = g.add({"matmul", {A, B}, cfg_.dtype, {}});
+    auto A = g.add(ENode{.op = "var", .children = {}, .dtype = cfg_.dtype, .shape = {}});
+    auto B = g.add(ENode{.op = "var", .children = {}, .dtype = cfg_.dtype, .shape = {}});
+    auto mm = g.add(ENode{.op = "matmul", .children = {A, B}, .dtype = cfg_.dtype, .shape = {}});
 
     EClassId root = mm;
     if (cfg_.fuse_bias_relu) {
-        auto bias = g.add({"var", {}, cfg_.dtype, {}});
-        auto add = g.add({"add", {mm, bias}});
-        auto relu = g.add({"relu", {add}});
+        // Use designated initializers to make the field order explicit
+        // and silence -Wmissing-field-initializers. ENode has 4 fields:
+        // op, children, dtype, shape. The {} for children/dtype/shape
+        // leave them as empty / std::nullopt.
+        auto bias = g.add(ENode{.op = "var", .children = {}, .dtype = cfg_.dtype, .shape = {}});
+        auto add = g.add(ENode{.op = "add", .children = {mm, bias}, .dtype = {}, .shape = {}});
+        auto relu = g.add(ENode{.op = "relu", .children = {add}, .dtype = {}, .shape = {}});
         root = relu;
     }
 

@@ -166,14 +166,16 @@ EGraph::extract(EClassId c, std::function<double(const ENode&)> cost_fn) const {
 
         ExtractedExpr best{{}, std::numeric_limits<double>::infinity()};
         for (const auto& n : classes_[root].nodes) {
-            double c = cost_fn(n);
+            // Local variable is `node_cost` (not `c`) to avoid shadowing
+            // the enclosing `extract` function's parameter `c`.
+            double node_cost = cost_fn(n);
             for (auto ch : n.children) {
                 auto sub = rec(ch);
-                c += sub.cost;
+                node_cost += sub.cost;
             }
-            if (c < best.cost) {
+            if (node_cost < best.cost) {
                 best.node = n;
-                best.cost = c;
+                best.cost = node_cost;
             }
         }
         if (best.cost == std::numeric_limits<double>::infinity()) {

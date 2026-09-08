@@ -133,7 +133,11 @@ InferResult infer_reshape(const Shape& a, const Shape& to) {
             return r;
         }
         Shape out = to;
-        out.dims()[dyn_idx] = DimExpr::make_constant(static_cast<i64>(src / known));
+        // dyn_idx is `int` but is guaranteed non-negative here (we set
+        // it inside the loop only when to[i] is the -1 dimension).
+        // Cast to usize for indexing.
+        out.dims()[static_cast<usize>(dyn_idx)] =
+            DimExpr::make_constant(static_cast<i64>(src / known));
         r.ok = true;
         r.shape = std::move(out);
         return r;
@@ -151,15 +155,18 @@ InferResult infer_transpose(const Shape& a, Span<const i32> perm) {
     }
     std::vector<bool> seen(a.rank(), false);
     for (i32 p : perm) {
-        if (p < 0 || static_cast<usize>(p) >= a.rank() || seen[p]) {
+        if (p < 0 || static_cast<usize>(p) >= a.rank() || seen[static_cast<usize>(p)]) {
             r.message = "transpose: invalid permutation";
             return r;
         }
-        seen[p] = true;
+        seen[static_cast<usize>(p)] = true;
     }
     Shape out;
     out.dims().reserve(a.rank());
-    for (i32 p : perm) out.dims().push_back(a[p]);
+    for (i32 p : perm) {
+        // p is guaranteed non-negative by the validation above.
+        out.dims().push_back(a[static_cast<usize>(p)]);
+    }
     r.ok = true;
     r.shape = std::move(out);
     return r;

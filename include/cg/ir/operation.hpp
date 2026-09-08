@@ -137,8 +137,12 @@ public:
     Operation* prev = nullptr;
     Operation* next = nullptr;
 
-    Operation(OpId id, Opcode op)
-        : id(id), opcode(op) {}
+    // Note: parameter names are suffixed with `_in` to avoid shadowing
+    // the member fields `id` and `opcode` in the initializer list
+    // (-Wshadow). The members themselves retain their short names
+    // because every other use site reads them as `op.id` / `op.opcode`.
+    Operation(OpId id_in, Opcode op_in)
+        : id(id_in), opcode(op_in) {}
 
     bool is_pure() const { return effects.is_pure(); }
     bool has_trait(OpTrait t) const { return traits.has(t); }

@@ -7,6 +7,7 @@
 #include "cg/analysis/unified/fact_propagator.hpp"
 
 #include "cg/ir/ops.hpp"
+#include "cg/shape/dim_expr.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -128,9 +129,12 @@ u32 LayoutPropagator::run(FactStore& store) {
             if (t->shape.rank() > 0) {
                 std::vector<DimExprPtr> strides(t->shape.rank());
                 DimExprPtr acc = DimExpr::make_constant(1);
+                // Signed outer index so the `i >= 0` test terminates;
+                // cast to usize for every container access.
                 for (isize i = static_cast<isize>(t->shape.rank()) - 1; i >= 0; --i) {
-                    strides[i] = acc;
-                    acc = DimExpr::make_mul(acc, t->shape[i]);
+                    usize const iu = static_cast<usize>(i);
+                    strides[iu] = acc;
+                    acc = DimExpr::make_mul(acc, t->shape[iu]);
                 }
                 auto new_strides = Fact<std::vector<DimExprPtr>>::make(
                     strides, Confidence::Derived,
@@ -160,8 +164,9 @@ u32 LayoutPropagator::run(FactStore& store) {
                     std::vector<DimExprPtr> strides(t->shape.rank());
                     DimExprPtr acc = DimExpr::make_constant(1);
                     for (isize i = static_cast<isize>(t->shape.rank()) - 1; i >= 0; --i) {
-                        strides[i] = acc;
-                        acc = DimExpr::make_mul(acc, t->shape[i]);
+                        usize const iu = static_cast<usize>(i);
+                        strides[iu] = acc;
+                        acc = DimExpr::make_mul(acc, t->shape[iu]);
                     }
                     auto new_strides = Fact<std::vector<DimExprPtr>>::make(
                         strides, Confidence::Derived,
@@ -225,22 +230,45 @@ u32 ConstantPropagator::run(FactStore& store) {
             }
 
             // add(x, 0) -> x  ;  add(0, x) -> x
+            // (ADD is commutative, so both directions must be checked.)
             if (op.opcode == OP_ADD && op.operands.size() == 2) {
                 auto& a = store.facts_for(op.operands[0].id());
                 auto& b = store.facts_for(op.operands[1].id());
-                if (a.constant_value_known.known && a.constant_value_known.value &&
-                    a.constant_value.known && a.constant_value.value == 0.0) {
-                    // Result is the second operand.
-                    auto& src = store.facts_for(op.operands[1].id());
-                    if (src.constant_value_known.known && src.constant_value_known.value &&
-                        src.constant_value.known) {
-                        auto new_cv = Fact<double>::make(
-                            src.constant_value.value, Confidence::Proven,
-                            Provenance("add_zero_identity", op.id));
-                        if (tf.constant_value.join(new_cv)) {
-                            ++discovered;
-                            store.notify_fact_changed(r.id(), id());
-                        }
+
+                // `is_zero(side)` returns true iff we have proven that
+                // `side`'s constant value is exactly 0.0.
+                auto is_zero = [](const auto& side) {
+                    return side.constant_value_known.known &&
+                           side.constant_value_known.value &&
+                           side.constant_value.known &&
+                           side.constant_value.value == 0.0;
+                };
+                // `has_const(side)` returns true iff we have proven any
+                // constant value for `side` (the value we'll propagate).
+                auto has_const = [](const auto& side) {
+                    return side.constant_value_known.known &&
+                           side.constant_value_known.value &&
+                           side.constant_value.known;
+                };
+
+                // add(0, x) -> x
+                if (is_zero(a) && has_const(b)) {
+                    auto new_cv = Fact<double>::make(
+                        b.constant_value.value, Confidence::Proven,
+                        Provenance("add_zero_identity", op.id));
+                    if (tf.constant_value.join(new_cv)) {
+                        ++discovered;
+                        store.notify_fact_changed(r.id(), id());
+                    }
+                }
+                // add(x, 0) -> x
+                else if (is_zero(b) && has_const(a)) {
+                    auto new_cv = Fact<double>::make(
+                        a.constant_value.value, Confidence::Proven,
+                        Provenance("add_zero_identity", op.id));
+                    if (tf.constant_value.join(new_cv)) {
+                        ++discovered;
+                        store.notify_fact_changed(r.id(), id());
                     }
                 }
             }
@@ -738,13 +766,10 @@ u32 CostPropagator::run(FactStore& store) {
                         auto a = op.operands[0].as_tensor();
                         auto b = op.operands[1].as_tensor();
                         if (a && b && a->shape.rank() >= 2 && b->shape.rank() >= 2) {
-                            u64 M = a->shape[a->shape.rank()-2]->is_constant()
-                                ? a->shape[a->shape.rank()-2]->value : 0;
-                            u64 K = a->shape[a->shape.rank()-1]->is_constant()
-                                ? a->shape[a->shape.rank()-1]->value : 0;
-                            u64 N = b->shape[b->shape.rank()-1]->is_constant()
-                                ? b->shape[b->shape.rank()-1]->value : 0;
-                            flops = 2 * M * K * N;
+                            u64 M = dim_value_or_zero(a->shape[a->shape.rank()-2]);
+                            u64 K = dim_value_or_zero(a->shape[a->shape.rank()-1]);
+                            u64 N = dim_value_or_zero(b->shape[b->shape.rank()-1]);
+                            flops = u64(2) * M * K * N;
                         }
                     }
                     break;

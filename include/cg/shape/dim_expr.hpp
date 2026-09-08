@@ -322,4 +322,23 @@ private:
     SmallVector<DimExprPtr> dims_;
 };
 
+// ---------------------------------------------------------------------------
+// dim_value_or_zero — the only correct way to convert a constant
+// DimExpr's i64 value to u64 for shape arithmetic.
+//
+// `DimExpr::value` is `i64` because dimensions can be negative in
+// intermediate symbolic expressions (e.g. `make_sub(a, b)`). Shape
+// dimensions in valid IR are always non-negative, but the type system
+// cannot prove that. Calling `static_cast<u64>(d->value)` on a
+// negative `i64` would silently wrap to a huge unsigned value; this
+// helper returns 0 instead, which is the existing convention
+// throughout the analysis passes ("unknown or invalid -> 0").
+//
+// Returns 0 if `d` is null, non-constant, or negative.
+// ---------------------------------------------------------------------------
+inline u64 dim_value_or_zero(const DimExprPtr& d) {
+    if (!d || !d->is_constant() || d->value < 0) return 0;
+    return static_cast<u64>(d->value);
+}
+
 } // namespace cg

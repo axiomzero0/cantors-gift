@@ -67,7 +67,9 @@ std::string SoftwarePipelineEmitter::emit_steady_state(
     os << "    // Issue load for stage %r_stage (async)\n";
     for (auto& load : stage.loads) {
         if (config.use_async_copy) {
-            u32 buf_offset_expr = config.num_buffers; // computed at runtime
+            // The buffer offset is computed at runtime as
+            // (r_stage % num_buffers). We don't emit it as a constant
+            // here — the runtime has access to config.num_buffers.
             os << "    // Load " << load.tensor_name
                << " into buffer (%r_stage % " << config.num_buffers << ")\n";
             os << "    // cp.async.ca.shared.global [smem + buf_offset], [global + k_offset], "

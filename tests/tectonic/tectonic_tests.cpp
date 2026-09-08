@@ -177,15 +177,20 @@ TEST(Tectonic, LearnedCostModelTrain) {
     std::vector<std::pair<CostFeatures, double>> data;
     for (int i = 0; i < 20; ++i) {
         CostFeatures f;
-        f.flops = i * 1e9;
-        f.bytes_global_load = i * 1e6;
+        // f.flops and f.bytes_global_load are u64 (unsigned long on this
+        // platform). Use u64 literals consistently to avoid implicit
+        // promotion to unsigned long long and the resulting narrowing
+        // conversion back to u64.
+        u64 const i_u = static_cast<u64>(i);
+        f.flops              = i_u * u64(1'000'000'000);
+        f.bytes_global_load = i_u * u64(1'000'000);
         data.push_back({f, i * 0.001});
     }
     model.train(data);
     EXPECT_TRUE(model.is_trained());
     CostFeatures test_f;
-    test_f.flops = 5e9;
-    test_f.bytes_global_load = 5e6;
+    test_f.flops              = u64(5) * u64(1'000'000'000);
+    test_f.bytes_global_load = u64(5) * u64(1'000'000);
     auto pred = model.predict(test_f);
     ASSERT_TRUE(pred.has_value());
     EXPECT_GE(*pred, 0);

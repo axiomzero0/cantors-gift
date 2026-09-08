@@ -8,6 +8,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
@@ -81,6 +82,11 @@ Span<const T> make_span(const std::vector<T>& v) {
 // ---------------------------------------------------------------------------
 template <typename T, usize N = 4>
 class SmallVector {
+    static_assert(N > 0,
+        "SmallVector requires N >= 1 so the inline buffer is a valid "
+        "array. If you want a purely heap-allocated vector, use std::vector "
+        "or set N to 1 with the understanding that the inline buffer will "
+        "hold exactly one element before spilling to the heap.");
 public:
     using value_type      = T;
     using size_type       = usize;
@@ -259,15 +265,44 @@ public:
 
 private:
     T* slot(usize i) {
+        // Invariant: when is_inline() is true, inline_ is the storage;
+        // when false, heap_ is non-null. grow() and steal_from() are
+        // the only functions that set heap_ and capacity_, and they
+        // always set heap_ to a non-null allocation when capacity_ > N.
+        // deallocate() restores capacity_ = N after freeing, so the
+        // invariant "heap_ == nullptr iff is_inline()" holds at every
+        // observable program point.
+        //
+        // GCC's -Wnull-dereference cannot prove this invariant across
+        // function boundaries (it doesn't track the (heap_, capacity_)
+        // pair as a single state). The defensive abort below documents
+        // the unreachable case; in optimized builds the branch is
+        // removed entirely by dead-code elimination.
         if (is_inline()) return reinterpret_cast<T*>(&inline_[0]) + i;
+        if (heap_ == nullptr) std::abort();  // invariant violation: unreachable
         return heap_ + i;
     }
     const T* slot(usize i) const {
         if (is_inline()) return reinterpret_cast<const T*>(&inline_[0]) + i;
+        if (heap_ == nullptr) std::abort();  // invariant violation: unreachable
         return heap_ + i;
     }
 
+    // is_inline() is a pure comparison — it never dereferences anything.
+    // GCC's -Wnull-dereference sometimes flags the function definition
+    // when the actual issue is at a use site it can't reason about
+    // (specifically: it cannot prove that `!is_inline()` implies
+    // `heap_ != nullptr`). We suppress the warning here because we've
+    // made the invariant explicit above (with the abort on violation)
+    // and the analyzer's complaint is a false positive.
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wnull-dereference"
+#endif
     bool is_inline() const { return capacity_ <= N; }
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
 
     void destroy_all() {
         for (usize i = 0; i < size_; ++i) slot(i)->~T();
@@ -277,6 +312,12 @@ private:
         if (!is_inline() && heap_) {
             ::operator delete(heap_, capacity_ * sizeof(T));
             heap_ = nullptr;
+            // Restore the invariant: heap_ == nullptr iff is_inline().
+            // Without this, slot() would dereference null heap_ on the
+            // next call (is_inline() returns false but heap_ is null).
+            // Setting capacity_ = N makes is_inline() return true, so
+            // slot() correctly falls back to the inline buffer.
+            capacity_ = N;
         }
     }
 
@@ -418,7 +459,10 @@ inline u64 next_power_of_two(u64 x) {
 }
 
 inline u64 log2_exact(u64 x) {
-    return std::countr_zero(x);
+    // std::countr_zero returns int (or unsigned int depending on the
+    // standard library). Cast through static_cast to make the
+    // conversion explicit and sign-safe.
+    return static_cast<u64>(std::countr_zero(x));
 }
 
 // ---------------------------------------------------------------------------

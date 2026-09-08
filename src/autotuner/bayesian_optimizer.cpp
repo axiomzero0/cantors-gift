@@ -126,14 +126,20 @@ GaussianProcess::Prediction GaussianProcess::predict(
     }
 
     // Back substitution.
+    //
+    // The outer loop runs the index `i` from n-1 down to 0; we use a
+    // signed iterator to make the `i >= 0` test work and cast to usize
+    // at every container index. The casts are explicit and safe
+    // because `i` is in [0, n).
     std::vector<double> alpha(n, 0.0);
     for (isize i = static_cast<isize>(n) - 1; i >= 0; --i) {
-        alpha[i] = K[i][n];
-        for (usize j = i + 1; j < n; ++j) {
-            alpha[i] -= K[i][j] * alpha[j];
+        usize const iu = static_cast<usize>(i);
+        alpha[iu] = K[iu][n];
+        for (usize j = iu + 1; j < n; ++j) {
+            alpha[iu] -= K[iu][j] * alpha[j];
         }
-        if (std::abs(K[i][i]) > 1e-12)
-            alpha[i] /= K[i][i];
+        if (std::abs(K[iu][iu]) > 1e-12)
+            alpha[iu] /= K[iu][iu];
     }
 
     // Mean prediction: k_star^T * alpha.
@@ -164,9 +170,10 @@ GaussianProcess::Prediction GaussianProcess::predict(
     }
     std::vector<double> z(n, 0.0);
     for (isize i = static_cast<isize>(n) - 1; i >= 0; --i) {
-        z[i] = K2[i][n];
-        for (usize j = i + 1; j < n; ++j) z[i] -= K2[i][j] * z[j];
-        if (std::abs(K2[i][i]) > 1e-12) z[i] /= K2[i][i];
+        usize const iu = static_cast<usize>(i);
+        z[iu] = K2[iu][n];
+        for (usize j = iu + 1; j < n; ++j) z[iu] -= K2[iu][j] * z[j];
+        if (std::abs(K2[iu][iu]) > 1e-12) z[iu] /= K2[iu][iu];
     }
 
     double k_xx = kernel(features, features);

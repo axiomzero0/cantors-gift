@@ -402,7 +402,11 @@ PreservedAnalyses FusionPass::run(Module& m, AnalysisManager& am) {
             }
 
             // Decide per-edge: fuse, materialize, or recompute.
-            bool any_fused = false;
+            // `producer_consumed` tracks whether the producer was
+            // absorbed by its sole consumer (and can therefore be
+            // removed). When there are multiple consumers, we never
+            // remove the producer even if some consumers fuse — the
+            // producer stays for the remaining consumers.
             bool producer_consumed = false;
 
             for (usize ci = 0; ci < consumers.size(); ++ci) {
@@ -449,7 +453,8 @@ PreservedAnalyses FusionPass::run(Module& m, AnalysisManager& am) {
                     } else {
                         // Replace only this consumer's use (already done by
                         // splicing operands). Other consumers still use prod_val.
-                        any_fused = true;
+                        // The producer is NOT removed (producer_consumed stays
+                        // false) so the remaining consumers keep their operand.
                     }
                     changed = true;
 

@@ -37,6 +37,17 @@ struct ENode {
 
 // A Pattern is either a variable (matches any e-class, binds to a name)
 // or a node pattern (matches op + recursively matches children).
+//
+// GCC's -Wmaybe-uninitialized produces a false positive on the
+// std::string members (var_name, op) when a Pattern is default-
+// constructed and then later copied. The std::string default
+// constructor always initializes to empty, but the analyzer cannot
+// always see through the std::string ABI. We suppress the warning
+// around the struct definition.
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 struct Pattern {
     bool is_variable = false;
     std::string var_name;        // if is_variable
@@ -61,6 +72,9 @@ struct Pattern {
         return p;
     }
 };
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
 
 class EGraph;
 
@@ -87,8 +101,8 @@ public:
     // Rewrite rule with nested pattern support.
     struct Rewrite {
         std::string name;
-        Pattern lhs;
-        RHSGen rhs;
+        Pattern lhs;          // default-constructed Pattern (is_variable=false)
+        RHSGen rhs;           // default-constructed std::function (empty)
     };
 
     // Saturate: apply rewrites until fixpoint or max_iters.
@@ -98,7 +112,7 @@ public:
     // Extract the best (cheapest) ENode for class `c`.
     struct ExtractedExpr {
         ENode node;
-        double cost;
+        double cost = 0.0;
     };
     ExtractedExpr extract(EClassId c,
                           std::function<double(const ENode&)> cost_fn) const;

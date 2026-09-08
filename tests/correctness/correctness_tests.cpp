@@ -241,6 +241,7 @@ TEST(Correctness, CostEstimatorUsesSchedule) {
 
     auto cost_no_shared = est.estimate(m, s_no_shared);
     auto cost_shared = est.estimate(m, s_shared);
+    (void)cost_no_shared;  // baseline; the actual assertion is on cost_shared
 
     EXPECT_GT(cost_shared.bytes_shared, 0u);
 }

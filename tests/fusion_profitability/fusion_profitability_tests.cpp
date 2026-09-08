@@ -129,8 +129,10 @@ TEST(FusionProfitability, ArithmeticIntensityAllOps) {
     AnalysisManager am(m);
     auto& ai = am.get<ArithmeticIntensityAnalysis>();
     usize ops_with_flops = 0;
-    for (auto& f : m.functions())
-        for (auto& op : *f->entry())
+    // Loop variable is `fn` (not `f`) to avoid shadowing the function
+    // pointer `f` declared above.
+    for (auto& fn : m.functions())
+        for (auto& op : *fn->entry())
             if (ai.intensity_of(op).flops > 0) ops_with_flops++;
     EXPECT_GE(ops_with_flops, 4u);
 }
@@ -146,8 +148,8 @@ TEST(FusionProfitability, Conv2DFlops) {
     b.output_tensor(conv);
     AnalysisManager am(m);
     auto& ai = am.get<ArithmeticIntensityAnalysis>();
-    for (auto& f : m.functions())
-        for (auto& op : *f->entry())
+    for (auto& fn : m.functions())
+        for (auto& op : *fn->entry())
             if (op.opcode == OP_CONV2D) {
                 auto oi = ai.intensity_of(op);
                 EXPECT_GT(oi.flops, 0);
@@ -167,8 +169,8 @@ TEST(FusionProfitability, SoftmaxFlops) {
     b.output_tensor(sm);
     AnalysisManager am(m);
     auto& ai = am.get<ArithmeticIntensityAnalysis>();
-    for (auto& f : m.functions())
-        for (auto& op : *f->entry())
+    for (auto& fn : m.functions())
+        for (auto& op : *fn->entry())
             if (op.opcode == OP_SOFTMAX) {
                 auto oi = ai.intensity_of(op);
                 EXPECT_EQ(oi.flops, 4u * 8 * 16);

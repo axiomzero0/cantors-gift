@@ -309,8 +309,9 @@ std::string PTXEmitter::emit_kernel(const CGFunction& fn,
     for (usize i = 0; i < fn.args.size(); ++i) {
         if (i) os << ",\n    ";
         else os << "\n    ";
-        const auto& arg = fn.args[i];
-        // Use distinct param names to avoid collision with registers.
+        // Use distinct param names (_param_<i>) to avoid collision with
+        // register names declared later. The arg type/shape is irrelevant
+        // at the PTX boundary — every tensor arg is a .u64 pointer.
         os << ".param .u64 _param_" << i;
     }
     os << "\n) {\n";

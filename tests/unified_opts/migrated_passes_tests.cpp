@@ -73,7 +73,7 @@ std::shared_ptr<Module> build_mul_zero() {
 // doesn't do directly, but the unified pipeline includes it via the
 // UnifiedOptimizationPipeline). Here we just test that unified
 // canonicalize doesn't break it.
-std::shared_ptr<Module> build_double_relu() {
+[[maybe_unused]] std::shared_ptr<Module> build_double_relu() {
     auto m = std::make_shared<Module>();
     auto f = m->create_function(
         "test",

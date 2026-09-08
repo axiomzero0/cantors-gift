@@ -360,7 +360,10 @@ CompileResult compile(const CompileTask& task, bool print_ir) {
     // 3. Run the full optimization pipeline.
     auto report = driver.run(*module);
     result.converged = report.converged;
-    result.iterations = report.iterations_run;
+    // Narrow usize -> u32. The IterativeDriver is bounded to a few
+    // iterations (default 3), so the cast is safe; the static_cast
+    // documents the intent and silences -Wconversion.
+    result.iterations = static_cast<u32>(report.iterations_run);
     result.ops_after = count_ops(*module);
     result.ir_text = module_to_string(*module);
 

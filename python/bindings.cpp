@@ -414,8 +414,8 @@ PYBIND11_MODULE(cantors_gift, m) {
             return fns;
         }, py::return_value_policy::reference)
         .def("lookup", &Module::lookup, py::return_value_policy::reference)
-        .def("constraints", [](Module& m) -> ConstraintSet& {
-            return m.constraints();
+        .def("constraints", [](Module& mod) -> ConstraintSet& {
+            return mod.constraints();
         }, py::return_value_policy::reference)
         .def("replace_all_uses", &Module::replace_all_uses)
         .def("num_functions", &Module::num_functions)
@@ -842,9 +842,9 @@ PYBIND11_MODULE(cantors_gift, m) {
         .def("add", &ScheduleSpace::add)
         .def("schedules", &ScheduleSpace::schedules, py::return_value_policy::reference)
         .def("size", &ScheduleSpace::size)
-        .def_static("grid_matmul", [](std::vector<i64> m, std::vector<i64> n,
+        .def_static("grid_matmul", [](std::vector<i64> m_dims, std::vector<i64> n,
                                        std::vector<i64> k, std::vector<i64> v) {
-            return ScheduleSpace::grid_matmul(std::move(m), std::move(n),
+            return ScheduleSpace::grid_matmul(std::move(m_dims), std::move(n),
                                                std::move(k), std::move(v));
         });
 
@@ -1657,8 +1657,8 @@ PYBIND11_MODULE(cantors_gift, m) {
         .value("Relaxed", NumericalMode::Relaxed)
         .value("FastMath", NumericalMode::FastMath);
 
-    m.def("numerical_mode_name", [](NumericalMode m) {
-        return std::string(numerical_mode_name(m));
+    m.def("numerical_mode_name", [](NumericalMode mode) {
+        return std::string(numerical_mode_name(mode));
     });
     m.def("allows_reassociation", &allows_reassociation);
     m.def("allows_contraction", &allows_contraction);

@@ -188,14 +188,23 @@ std::string PTXMMAEmitter::emit_tiled_matmul_kernel(
     MMAFragments frags = allocate_fragments(next_reg);
 
     // Declare fragment registers.
+    // The fragment registers always come in groups of 4 (for A and C/D,
+    // since PTX mma.m8n8k4 uses 4 .b32 / .f32 fragment registers) or 2
+    // (for B, which is 2 .b32 packed f16x2). We hard-code the counts as
+    // `usize` to avoid sign-conversion warnings on the loop counters.
+    constexpr usize kAFragCount = 4;
+    constexpr usize kBFragCount = 2;
+    constexpr usize kCFragCount = 4;
+
     os << "    // MMA fragment registers\n";
-    os << "    .reg .b32 4 " << frags.a_regs[0];
-    for (int i = 1; i < 4; ++i) os << ", " << frags.a_regs[i];
+    os << "    .reg .b32 " << kAFragCount << " " << frags.a_regs[0];
+    for (usize i = 1; i < kAFragCount; ++i) os << ", " << frags.a_regs[i];
     os << "; // A fragment (f16x2 packed)\n";
-    os << "    .reg .b32 2 " << frags.b_regs[0] << ", " << frags.b_regs[1];
+    os << "    .reg .b32 " << kBFragCount << " " << frags.b_regs[0]
+        << ", " << frags.b_regs[1];
     os << "; // B fragment\n";
-    os << "    .reg .f32 4 " << frags.c_regs[0];
-    for (int i = 1; i < 4; ++i) os << ", " << frags.c_regs[i];
+    os << "    .reg .f32 " << kCFragCount << " " << frags.c_regs[0];
+    for (usize i = 1; i < kCFragCount; ++i) os << ", " << frags.c_regs[i];
     os << "; // C/D accumulator\n\n";
 
     // Zero accumulator.

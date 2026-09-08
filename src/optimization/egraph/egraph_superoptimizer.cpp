@@ -48,8 +48,14 @@ std::optional<EGraphBuildResult> build_egraph_for_region(
     auto& class_to_value = result.class_to_value;
 
     std::function<EClassId(Value, usize)> build = [&](Value v, usize depth) -> EClassId {
+        // Capture the tensor type once. Calling v.as_tensor() twice in
+        // the same expression would force GCC to assume the two calls
+        // might return different pointers, which trips -Wnull-dereference
+        // on the second dereference.
+        auto t = v.as_tensor();
+        DType dt = t ? t->dtype : DType::F32;
         if (depth > max_depth) {
-            auto c = graph.add({"var", {}, v.as_tensor() ? v.as_tensor()->dtype : DType::F32, {}});
+            auto c = graph.add({"var", {}, dt, {}});
             class_to_value[c] = v;
             return c;
         }
@@ -68,7 +74,7 @@ std::optional<EGraphBuildResult> build_egraph_for_region(
         }
 
         if (!def || !def->is_pure()) {
-            auto c = graph.add({"var", {}, v.as_tensor() ? v.as_tensor()->dtype : DType::F32, {}});
+            auto c = graph.add({"var", {}, dt, {}});
             value_to_class[v.id()] = c;
             class_to_value[c] = v;
             return c;
@@ -92,7 +98,7 @@ std::optional<EGraphBuildResult> build_egraph_for_region(
             case OP_RESHAPE: op_name = "reshape"; break;
             default:
                 op_name = "var";
-                auto c = graph.add({"var", {}, v.as_tensor() ? v.as_tensor()->dtype : DType::F32, {}});
+                auto c = graph.add({"var", {}, dt, {}});
                 value_to_class[v.id()] = c;
                 class_to_value[c] = v;
                 return c;
@@ -100,7 +106,7 @@ std::optional<EGraphBuildResult> build_egraph_for_region(
 
         ENode enode;
         enode.op = op_name;
-        if (auto t = v.as_tensor()) enode.dtype = t->dtype;
+        enode.dtype = dt;  // reuse the captured type from above
         for (auto& operand : def->operands) {
             enode.children.push_back(build(operand, depth + 1));
         }

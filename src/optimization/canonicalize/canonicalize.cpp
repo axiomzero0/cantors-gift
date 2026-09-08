@@ -13,15 +13,6 @@ u64 operand_key(const Value& v) {
     return static_cast<u64>(v.id());
 }
 
-// Returns true if `v` is defined by a `constant` op.
-bool is_constant_value(const Value& v) {
-    // We don't have back-pointers from Value to its defining op here; the
-    // canonicalization operates by walking the block, so by the time we look
-    // at an operand it has already been visited and we have a pointer to its
-    // defining operation in the block. We pass that in.
-    return false;
-}
-
 bool is_constant_op(const Operation& op) {
     return op.opcode == OP_CONSTANT;
 }
@@ -233,7 +224,14 @@ bool canonicalize_op(Module& m, Block& block, Operation& op) {
                     bool identity = true;
                     if (outer_perm->ints.size() == inner_perm->ints.size()) {
                         for (usize i = 0; i < outer_perm->ints.size(); ++i) {
-                            if (outer_perm->ints[inner_perm->ints[i]] != static_cast<i64>(i)) {
+                            // inner_perm->ints[i] is i64; for use as an index
+                            // into outer_perm->ints we need a usize. Negative
+                            // values would be a malformed perm attribute —
+                            // treat them as non-matching rather than wrapping.
+                            i64 const inner_idx = inner_perm->ints[i];
+                            if (inner_idx < 0 ||
+                                static_cast<usize>(inner_idx) >= outer_perm->ints.size() ||
+                                outer_perm->ints[static_cast<usize>(inner_idx)] != static_cast<i64>(i)) {
                                 identity = false; break;
                             }
                         }

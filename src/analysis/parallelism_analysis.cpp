@@ -1,4 +1,15 @@
 // analysis/parallelism_analysis.cpp
+//
+// Computes per-op parallelism metadata: how many independent work items
+// each op exposes, whether it has a reduction, and the reduction length.
+// Used by the cost model and the schedule optimizer to decide tiling
+// and parallelization strategy.
+//
+// Shape dimension access uses `dim_value_or_zero()` rather than
+// `static_cast<u64>(d->value)` because the latter would silently wrap
+// negative `i64` values into huge unsigned values. A negative shape
+// dimension is invalid IR but we still must not produce garbage
+// numbers from it.
 #include "cg/analysis/parallelism_analysis.hpp"
 #include "cg/ir/ops.hpp"
 
@@ -15,7 +26,9 @@ void ParallelismAnalysis::compute() {
                     u64 n = 1;
                     for (auto& d : t->shape) {
                         if (!d->is_constant()) return 0;
-                        n *= static_cast<u64>(d->value);
+                        u64 dv = dim_value_or_zero(d);
+                        if (dv == 0) return 0;
+                        n *= dv;
                     }
                     return n;
                 }
@@ -26,16 +39,14 @@ void ParallelismAnalysis::compute() {
                 auto a = op.operands[0].as_tensor();
                 auto b = op.operands[1].as_tensor();
                 if (a && b && a->shape.rank() >= 2 && b->shape.rank() >= 2) {
-                    u64 M = a->shape[a->shape.rank() - 2]->is_constant()
-                        ? a->shape[a->shape.rank() - 2]->value : 0;
-                    u64 K = a->shape[a->shape.rank() - 1]->is_constant()
-                        ? a->shape[a->shape.rank() - 1]->value : 0;
-                    u64 N = b->shape[b->shape.rank() - 1]->is_constant()
-                        ? b->shape[b->shape.rank() - 1]->value : 0;
+                    u64 M = dim_value_or_zero(a->shape[a->shape.rank() - 2]);
+                    u64 K = dim_value_or_zero(a->shape[a->shape.rank() - 1]);
+                    u64 N = dim_value_or_zero(b->shape[b->shape.rank() - 1]);
                     u64 batch = 1;
                     for (usize i = 0; i + 2 < a->shape.rank(); ++i) {
-                        batch *= a->shape[i]->is_constant()
-                            ? a->shape[i]->value : 0;
+                        u64 bv = dim_value_or_zero(a->shape[i]);
+                        if (bv == 0) { batch = 0; break; }
+                        batch *= bv;
                     }
                     pi.independent_items = batch * M * N;
                     pi.has_reduction = true;

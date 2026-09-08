@@ -13,6 +13,7 @@
 
 #include "cg/ir/builder.hpp"
 #include "cg/ir/ops.hpp"
+#include "cg/shape/dim_expr.hpp"
 
 #include <iostream>
 
@@ -53,7 +54,10 @@ PreservedAnalyses PropertyDrivenSimplification::run(Module& m, AnalysisManager& 
     for (auto& f : m.functions()) {
         for (auto& op : *f->entry()) {
             if (op.results.empty()) continue;
-            ValueId result_vid = op.results[0].id();
+            // Note: `result_vid` was previously captured but never read.
+            // The rewrite rules below operate on op.results[0] directly
+            // via m.replace_all_uses(), which doesn't need the id ahead
+            // of time.
 
             // mul(x, Zero) -> Zero  (the result is provably zero)
             if (op.opcode == OP_MUL && op.operands.size() == 2) {
@@ -401,10 +405,12 @@ PreservedAnalyses ReductionTreeSynthesis::run(Module& m, AnalysisManager& am) {
                 if (in) {
                     reduction_length = 1;
                     for (auto& axis : ri.reduction_axes) {
+                        // axis is i32; cast to usize only after checking
+                        // it's a valid (non-negative, in-range) index.
                         if (axis >= 0 && static_cast<usize>(axis) < in->shape.rank()) {
-                            DimExprPtr d = in->shape[axis];
+                            DimExprPtr d = in->shape[static_cast<usize>(axis)];
                             if (d->is_constant()) {
-                                reduction_length *= static_cast<u64>(d->value);
+                                reduction_length *= dim_value_or_zero(d);
                             }
                         }
                     }

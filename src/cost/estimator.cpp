@@ -1,6 +1,13 @@
 // cost/estimator.cpp - analytical cost model implementation
+//
+// All shape dimension reads go through `dim_value_or_zero()` (declared in
+// shape/dim_expr.hpp). The helper returns 0 for null / non-constant /
+// negative dimensions, which is the existing convention for "unknown"
+// throughout the cost model. Direct `static_cast<u64>(d->value)` would
+// silently wrap negative `i64` values into huge unsigned values.
 #include "cg/cost/estimator.hpp"
 #include "cg/ir/ops.hpp"
+#include "cg/shape/dim_expr.hpp"
 
 #include <algorithm>
 
@@ -19,14 +26,16 @@ u64 flops_for_op(const Operation& op) {
         u64 batch = 1;
         for (usize i = 0; i + 2 < a->shape.rank(); ++i) {
             if (!a->shape[i]->is_constant()) return 0;
-            batch *= static_cast<u64>(a->shape[i]->value);
+            u64 dv = dim_value_or_zero(a->shape[i]);
+            if (dv == 0) return 0;
+            batch *= dv;
         }
         if (!a->shape[a->shape.rank() - 2]->is_constant() ||
             !a->shape[a->shape.rank() - 1]->is_constant() ||
             !b->shape[b->shape.rank() - 1]->is_constant()) return 0;
-        u64 M = a->shape[a->shape.rank() - 2]->value;
-        u64 K = a->shape[a->shape.rank() - 1]->value;
-        u64 N = b->shape[b->shape.rank() - 1]->value;
+        u64 M = dim_value_or_zero(a->shape[a->shape.rank() - 2]);
+        u64 K = dim_value_or_zero(a->shape[a->shape.rank() - 1]);
+        u64 N = dim_value_or_zero(b->shape[b->shape.rank() - 1]);
         return 2 * batch * M * K * N;
     }
     if (op.opcode == OP_REDUCE_SUM || op.opcode == OP_REDUCE_MAX ||
@@ -148,9 +157,11 @@ CostEstimate CostEstimator::estimate(const Module& m, const Schedule& schedule) 
 
     // Tensor cores increase effective compute throughput.
     double compute_throughput = hw_.peak_flops(DType::F32, uses_tc);
-    double compute_sec = out.flops / std::max(1.0, compute_throughput);
-    double mem_sec = (out.bytes_global + out.bytes_shared) /
-                     std::max(1.0, hw_.memory.get(MemorySpace::Generic));
+    double compute_sec = static_cast<double>(out.flops) /
+                         std::max(1.0, compute_throughput);
+    double mem_sec = (static_cast<double>(out.bytes_global) +
+                      static_cast<double>(out.bytes_shared)) /
+                     std::max(1.0, static_cast<double>(hw_.memory.get(MemorySpace::Generic)));
     out.estimated_runtime_sec = std::max(compute_sec, mem_sec);
     return out;
 }
@@ -193,7 +204,14 @@ CostEstimate CostEstimator::estimate_matmul(i64 M, i64 K, i64 N, DType dt,
     // Shared memory reduces global memory traffic (tiles are loaded once
     // and reused across the reduction dimension).
     if (uses_shared) {
-        u64 tile_reuse = std::max<u64>(1, K / k_tile);
+        // K and k_tile are both shape-derived integers. K comes in as
+        // `i64` (the function signature), but the schedule parameter
+        // `k_tile` is a positive u64. We promote K to u64 via an
+        // explicit cast only after confirming it's non-negative —
+        // callers should never pass a negative M/K/N, but the type
+        // system cannot prove that locally.
+        u64 const Ku = M < 0 || K < 0 || N < 0 ? 0 : static_cast<u64>(K);
+        u64 tile_reuse = std::max<u64>(1, Ku / k_tile);
         u64 shared_bytes = (m_tile * k_tile + k_tile * n_tile) * dtype_size(dt);
         out.bytes_shared = shared_bytes;
         out.bytes_global = out.bytes_global / tile_reuse;
@@ -204,8 +222,10 @@ CostEstimate CostEstimator::estimate_matmul(i64 M, i64 K, i64 N, DType dt,
         out.bytes_global /= std::max(u64(1), vector_width);
     }
 
-    double compute_sec = out.flops / hw_.peak_flops(dt, uses_tc);
-    double mem_sec = out.bytes_global / std::max(1.0, hw_.memory.get(MemorySpace::Generic));
+    double compute_sec = static_cast<double>(out.flops) /
+                         std::max(1.0, hw_.peak_flops(dt, uses_tc));
+    double mem_sec = static_cast<double>(out.bytes_global) /
+                     std::max(1.0, static_cast<double>(hw_.memory.get(MemorySpace::Generic)));
     out.estimated_runtime_sec = std::max(compute_sec, mem_sec);
     return out;
 }

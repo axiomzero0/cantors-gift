@@ -1,6 +1,7 @@
 // lowering/tensor_to_codegen.cpp - Tensor IR -> Codegen IR lowering
 #include "cg/lowering/tensor_to_codegen.hpp"
 #include "cg/ir/ops.hpp"
+#include "cg/shape/dim_expr.hpp"
 
 #include <cmath>
 
@@ -159,11 +160,14 @@ void TensorToCodegenLowering::lower_matmul(const Operation& op,
     if (!a_t || !b_t) return;
 
     u64 M = a_t->shape[a_t->shape.rank() - 2]->is_constant()
-        ? a_t->shape[a_t->shape.rank() - 2]->value : opts_.matmul_m_tile;
+        ? dim_value_or_zero(a_t->shape[a_t->shape.rank() - 2])
+        : opts_.matmul_m_tile;
     u64 K = a_t->shape[a_t->shape.rank() - 1]->is_constant()
-        ? a_t->shape[a_t->shape.rank() - 1]->value : opts_.matmul_k_tile;
+        ? dim_value_or_zero(a_t->shape[a_t->shape.rank() - 1])
+        : opts_.matmul_k_tile;
     u64 N = b_t->shape[b_t->shape.rank() - 1]->is_constant()
-        ? b_t->shape[b_t->shape.rank() - 1]->value : opts_.matmul_n_tile;
+        ? dim_value_or_zero(b_t->shape[b_t->shape.rank() - 1])
+        : opts_.matmul_n_tile;
 
     u64 m_tile = std::min(opts_.matmul_m_tile, M);
     u64 n_tile = std::min(opts_.matmul_n_tile, N);
@@ -275,9 +279,14 @@ void TensorToCodegenLowering::lower_alloc(const Operation& op,
     // Alloc ops are metadata; we emit them as a comment.
     CGInstruction ai;
     ai.opcode = CGOpcode::Const;
-    ai.comment = "alloc buffer_id=" +
-        std::to_string(op.attributes.get("buffer_id") ?
-                        op.attributes.get("buffer_id")->integer : 0);
+    // Read the buffer_id attribute safely. The attribute may be missing
+    // (defaults to 0); GCC's -Wnull-dereference cannot prove that the
+    // ternary handles the nullptr case, so we extract it explicitly.
+    i64 buffer_id = 0;
+    if (auto attr = op.attributes.get("buffer_id")) {
+        buffer_id = attr->integer;
+    }
+    ai.comment = "alloc buffer_id=" + std::to_string(buffer_id);
     out.emit(ai);
 }
 
@@ -285,9 +294,11 @@ void TensorToCodegenLowering::lower_free(const Operation& op,
                                            CGFunction& out) {
     CGInstruction fi;
     fi.opcode = CGOpcode::Const;
-    fi.comment = "free buffer_id=" +
-        std::to_string(op.attributes.get("buffer_id") ?
-                        op.attributes.get("buffer_id")->integer : 0);
+    i64 buffer_id = 0;
+    if (auto attr = op.attributes.get("buffer_id")) {
+        buffer_id = attr->integer;
+    }
+    fi.comment = "free buffer_id=" + std::to_string(buffer_id);
     out.emit(fi);
 }
 

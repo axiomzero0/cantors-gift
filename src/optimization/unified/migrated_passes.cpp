@@ -19,17 +19,14 @@ namespace cg {
 
 namespace {
 
-// Build a fresh analyzer with default propagators + hardware.
-UnifiedAnalyzer make_analyzer(Module& m, AnalysisManager& am) {
-    UnifiedAnalyzer a(m);
-    a.set_numerical_mode(NumericalMode::FastMath);
-    a.add_default_propagators();
-    return a;
-}
-
 // RAII helper: use a shared analyzer if provided, else build a fresh one.
 // This is the key to analyzer reuse — passes that receive a non-null
 // shared_ pointer skip the ~50-200 µs analyzer construction + run.
+//
+// Note: this struct replaces the previous free function `make_analyzer`,
+// which was dead code (defined but never called). The struct form is
+// preferred because it manages the analyzer's lifetime explicitly and
+// makes the "use shared OR build fresh" decision visible at the call site.
 struct AnalyzerScope {
     std::unique_ptr<UnifiedAnalyzer> owned;
     UnifiedAnalyzer* ptr = nullptr;
@@ -298,7 +295,8 @@ PreservedAnalyses UnifiedCanonicalizePass::run(Module& m, AnalysisManager& am) {
         for (auto& f : m.functions()) {
             for (auto& op : *f->entry()) {
                 if (op.results.empty()) continue;
-                ValueId result_vid = op.results[0].id();
+                // Note: `result_vid` was previously captured but never read.
+                // The rewrite rules below operate on op.results[0] directly.
 
                 // add(x, Zero) -> x   ;   add(Zero, x) -> x
                 if (op.opcode == OP_ADD && op.operands.size() == 2) {
@@ -389,8 +387,16 @@ PreservedAnalyses UnifiedCanonicalizePass::run(Module& m, AnalysisManager& am) {
                             outer_perm->ints.size() == inner_perm->ints.size()) {
                             bool identity = true;
                             for (usize i = 0; i < outer_perm->ints.size(); ++i) {
-                                if (outer_perm->ints[inner_perm->ints[i]] !=
-                                    static_cast<i64>(i)) {
+                                // inner_perm->ints[i] is i64; for use as an
+                                // index we need a usize. Negative values
+                                // would be a malformed perm attribute —
+                                // treat them as non-matching rather than
+                                // wrapping to a huge unsigned index.
+                                i64 const inner_idx = inner_perm->ints[i];
+                                if (inner_idx < 0 ||
+                                    static_cast<usize>(inner_idx) >= outer_perm->ints.size() ||
+                                    outer_perm->ints[static_cast<usize>(inner_idx)] !=
+                                        static_cast<i64>(i)) {
                                     identity = false; break;
                                 }
                             }

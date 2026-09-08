@@ -212,7 +212,10 @@ CostFeatures AnalyticalCostModelV2::extract_features(
     }
 
     // Memory bytes
-    u32 elem_size = dtype_size(dtype);
+    // dtype_size returns usize; cast explicitly to u32. The dtype_size
+    // values are tiny (1, 2, 4, 8, 16) so the cast is lossless, but the
+    // explicit cast documents the intent and silences -Wconversion.
+    u32 elem_size = static_cast<u32>(dtype_size(dtype));
     f.bytes_global_load = (M * K + K * N) * elem_size;
     f.bytes_global_store = M * N * elem_size;
 
@@ -245,7 +248,12 @@ CostFeatures AnalyticalCostModelV2::extract_features(
     if (b_size < hw_.l2_cache_bytes) {
         f.l2_hit_rate = 0.8;
     } else {
-        f.l2_hit_rate = static_cast<double>(hw_.l2_cache_bytes) / b_size;
+        // Explicit double cast: u64 -> double can lose precision for
+        // very large u64 values, but l2_cache_bytes is bounded by
+        // physical hardware (typically < 1 TB), so the conversion is
+        // safe in practice.
+        f.l2_hit_rate = static_cast<double>(hw_.l2_cache_bytes) /
+                        static_cast<double>(b_size);
     }
 
     return f;
@@ -269,20 +277,26 @@ void LearnedCostModel::train(
     weights_.assign(num_features, 0.0);
     bias_ = 0.0;
 
-    auto extract = [](const CostFeatures& f) -> std::vector<double> {
+    // The lambda parameter is named `feat` (not `f`) so it doesn't
+    // shadow any enclosing scope. This is the same convention used in
+    // `predict` below.
+    auto extract = [](const CostFeatures& feat) -> std::vector<double> {
         return {
-            static_cast<double>(f.flops) / 1e9,
-            static_cast<double>(f.bytes_global_load + f.bytes_global_store) / 1e6,
-            static_cast<double>(f.num_pipeline_stages),
-            static_cast<double>(f.m_tile),
-            static_cast<double>(f.n_tile),
-            static_cast<double>(f.k_tile),
-            static_cast<double>(f.registers_per_thread),
-            static_cast<double>(f.shared_mem_per_block) / 1024.0,
+            static_cast<double>(feat.flops) / 1e9,
+            static_cast<double>(feat.bytes_global_load + feat.bytes_global_store) / 1e6,
+            static_cast<double>(feat.num_pipeline_stages),
+            static_cast<double>(feat.m_tile),
+            static_cast<double>(feat.n_tile),
+            static_cast<double>(feat.k_tile),
+            static_cast<double>(feat.registers_per_thread),
+            static_cast<double>(feat.shared_mem_per_block) / 1024.0,
         };
     };
 
-    double lr = 1.0 / std::max<usize>(1, n);  // adaptive learning rate
+    // Learning rate: 1/n (bounded to avoid divide-by-zero). `n` is usize;
+    // cast to double explicitly — for very large datasets this loses
+    // precision but that's fine for an adaptive LR term.
+    double lr = 1.0 / static_cast<double>(std::max<usize>(1, n));
     for (int iter = 0; iter < 1000; ++iter) {
         std::vector<double> grads(num_features, 0.0);
         double bias_grad = 0;
@@ -296,9 +310,11 @@ void LearnedCostModel::train(
                 grads[i] += error * x[i];
             bias_grad += error;
         }
+        // `n` is usize; convert to double for the division.
+        double const dn = static_cast<double>(n);
         for (usize i = 0; i < num_features; ++i)
-            weights_[i] -= lr * grads[i] / n;
-        bias_ -= lr * bias_grad / n;
+            weights_[i] -= lr * grads[i] / dn;
+        bias_ -= lr * bias_grad / dn;
     }
 
     trained_ = true;
@@ -307,16 +323,18 @@ void LearnedCostModel::train(
 std::optional<double> LearnedCostModel::predict(const CostFeatures& f) const {
     if (!trained_) return std::nullopt;
 
-    auto extract = [](const CostFeatures& f) -> std::vector<double> {
+    // The lambda parameter is named `feat` (not `f`) to avoid shadowing
+    // the enclosing function's parameter `f`.
+    auto extract = [](const CostFeatures& feat) -> std::vector<double> {
         return {
-            static_cast<double>(f.flops) / 1e9,
-            static_cast<double>(f.bytes_global_load + f.bytes_global_store) / 1e6,
-            static_cast<double>(f.num_pipeline_stages),
-            static_cast<double>(f.m_tile),
-            static_cast<double>(f.n_tile),
-            static_cast<double>(f.k_tile),
-            static_cast<double>(f.registers_per_thread),
-            static_cast<double>(f.shared_mem_per_block) / 1024.0,
+            static_cast<double>(feat.flops) / 1e9,
+            static_cast<double>(feat.bytes_global_load + feat.bytes_global_store) / 1e6,
+            static_cast<double>(feat.num_pipeline_stages),
+            static_cast<double>(feat.m_tile),
+            static_cast<double>(feat.n_tile),
+            static_cast<double>(feat.k_tile),
+            static_cast<double>(feat.registers_per_thread),
+            static_cast<double>(feat.shared_mem_per_block) / 1024.0,
         };
     };
 

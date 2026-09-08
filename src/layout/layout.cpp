@@ -74,9 +74,13 @@ LayoutPtr Layout::make_transpose(LayoutPtr base, SmallVector<i32> perm) {
     auto l = std::make_shared<Layout>();
     l->kind = LayoutKind::Transpose;
     // The output shape is the permutation of the base shape.
+    // `perm` contains i32 axis indices; cast through usize for indexing
+    // (callers are responsible for providing valid 0..rank-1 axes).
     Shape out;
     out.dims().reserve(base->shape.rank());
-    for (i32 p : perm) out.dims().push_back(base->shape[p]);
+    for (i32 p : perm) {
+        out.dims().push_back(base->shape[static_cast<usize>(p)]);
+    }
     l->shape = std::move(out);
     l->outer = std::move(base);
     l->permutation = std::move(perm);
@@ -140,8 +144,9 @@ std::optional<u64> Layout::byte_offset(Span<const i64> indices, DType dtype) con
             // Output index i selects base index permutation[i].
             SmallVector<i64> mapped;
             mapped.reserve(shape.rank());
-            for (usize i = 0; i < shape.rank(); ++i)
-                mapped.push_back(indices[permutation[i]]);
+            for (usize i = 0; i < shape.rank(); ++i) {
+                mapped.push_back(indices[static_cast<usize>(permutation[i])]);
+            }
             return outer->byte_offset(make_span(mapped), dtype);
         }
         case LayoutKind::Broadcast: {
@@ -150,7 +155,7 @@ std::optional<u64> Layout::byte_offset(Span<const i64> indices, DType dtype) con
             SmallVector<i64> mapped;
             for (i32 axis : permutation) {
                 if (axis >= 0 && static_cast<usize>(axis) < indices.size())
-                    mapped.push_back(indices[axis]);
+                    mapped.push_back(indices[static_cast<usize>(axis)]);
                 else
                     mapped.push_back(0);
             }

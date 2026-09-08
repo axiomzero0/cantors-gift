@@ -64,7 +64,10 @@ std::shared_ptr<Module> build_matmul_relu_module() {
 }
 
 // Build a module with constant operands to test constant propagation.
-std::shared_ptr<Module> build_constant_module() {
+// Declared [[maybe_unused]] because not every test in this file uses it;
+// the function is part of the test scaffolding and may be invoked from
+// future tests.
+[[maybe_unused]] std::shared_ptr<Module> build_constant_module() {
     auto module = std::make_shared<Module>();
     std::vector<TypePtr> operand_types = {
         make_tensor_type({4, 4}, DType::F32),

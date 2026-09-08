@@ -78,22 +78,32 @@ public:
         for (auto* t : inputs) args.push_back(t->data);
         for (auto* t : outputs) args.push_back(t->data);
 
-        // Call the function. We use a varargs-style cast since we don't
-        // know the exact arity at compile time.
-        auto fn = reinterpret_cast<void(**)(void*)>(jit_memory_.entry());
-        // For now, call with up to 6 pointer args (System V ABI: RDI, RSI, RDX, RCX, R8, R9).
-        // This is safe because the JIT'd function was compiled with the
-        // lowering pass which uses the same convention.
+        // Call the JIT'd function with the appropriate arity.
+        //
+        // We use named function-pointer typedefs instead of C-style casts
+        // so the conversion is explicit and -Wold-style-cast clean.
+        // The System V AMD64 ABI passes the first 6 integer/pointer
+        // arguments in registers (RDI, RSI, RDX, RCX, R8, R9), so calling
+        // with up to 6 void* args is ABI-correct regardless of arity —
+        // unused argument registers are simply ignored by the callee.
+        using Fn1 = void(*)(void*);
+        using Fn2 = void(*)(void*, void*);
+        using Fn4 = void(*)(void*, void*, void*, void*);
+        using Fn6 = void(*)(void*, void*, void*, void*, void*, void*);
+        void* entry = jit_memory_.entry();
+        // Note: previously a `fn` variable was declared here but never
+        // used (the call sites below cast `entry` directly to the right
+        // arity). The dead variable has been removed.
         if (args.size() >= 6) {
-            ((void(*)(void*,void*,void*,void*,void*,void*))jit_memory_.entry())(
+            reinterpret_cast<Fn6>(entry)(
                 args[0], args[1], args[2], args[3], args[4], args[5]);
         } else if (args.size() >= 4) {
-            ((void(*)(void*,void*,void*,void*))jit_memory_.entry())(
+            reinterpret_cast<Fn4>(entry)(
                 args[0], args[1], args[2], args[3]);
         } else if (args.size() >= 2) {
-            ((void(*)(void*,void*))jit_memory_.entry())(args[0], args[1]);
+            reinterpret_cast<Fn2>(entry)(args[0], args[1]);
         } else if (args.size() >= 1) {
-            ((void(*)(void*))jit_memory_.entry())(args[0]);
+            reinterpret_cast<Fn1>(entry)(args[0]);
         }
         (void)stream;
     }
@@ -172,17 +182,17 @@ KernelCache::lookup(u64 key) {
     //   u64 constant_mem_bytes
     //   u32 threads_per_block
     auto read_u32 = [&]() -> u32 {
-        u32 v; in.read(reinterpret_cast<char*>(&v), 4);
+        u32 v; in.read(reinterpret_cast<char*>(&v), static_cast<std::streamsize>(sizeof(v)));
         return v;
     };
     auto read_u64 = [&]() -> u64 {
-        u64 v; in.read(reinterpret_cast<char*>(&v), 8);
+        u64 v; in.read(reinterpret_cast<char*>(&v), static_cast<std::streamsize>(sizeof(v)));
         return v;
     };
     auto read_string = [&]() -> std::string {
         auto len = read_u64();
         std::string s(len, '\0');
-        in.read(s.data(), len);
+        in.read(s.data(), static_cast<std::streamsize>(len));
         return s;
     };
 
@@ -198,7 +208,8 @@ KernelCache::lookup(u64 key) {
 
     auto mc_len = read_u64();
     exe->machine_code.resize(mc_len);
-    in.read(reinterpret_cast<char*>(exe->machine_code.data()), mc_len);
+    in.read(reinterpret_cast<char*>(exe->machine_code.data()),
+            static_cast<std::streamsize>(mc_len));
 
     exe->ptx_text = read_string();
     exe->disassembly = read_string();
@@ -231,14 +242,16 @@ void KernelCache::insert(u64 key, std::shared_ptr<Executable> exe) {
     if (!out) return;
 
     auto write_u32 = [&](u32 v) {
-        out.write(reinterpret_cast<const char*>(&v), 4);
+        out.write(reinterpret_cast<const char*>(&v),
+                  static_cast<std::streamsize>(sizeof(v)));
     };
     auto write_u64 = [&](u64 v) {
-        out.write(reinterpret_cast<const char*>(&v), 8);
+        out.write(reinterpret_cast<const char*>(&v),
+                  static_cast<std::streamsize>(sizeof(v)));
     };
     auto write_string = [&](const std::string& s) {
         write_u64(s.size());
-        out.write(s.data(), s.size());
+        out.write(s.data(), static_cast<std::streamsize>(s.size()));
     };
 
     write_u32(0x454B4743); // "CGKE"
@@ -250,7 +263,7 @@ void KernelCache::insert(u64 key, std::shared_ptr<Executable> exe) {
 
     write_u64(exe->machine_code.size());
     out.write(reinterpret_cast<const char*>(exe->machine_code.data()),
-              exe->machine_code.size());
+              static_cast<std::streamsize>(exe->machine_code.size()));
 
     write_string(exe->ptx_text);
     write_string(exe->disassembly);

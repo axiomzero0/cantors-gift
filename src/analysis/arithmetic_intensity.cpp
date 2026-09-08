@@ -13,9 +13,15 @@
 // Uses dynamic roofline ridge from HardwareModel instead of hardcoded 1.0/16.0.
 // The ridge = peak_flops / peak_bw. For H100 F16 TC: ~295 FLOPs/byte.
 // For CPU F32: ~5 FLOPs/byte.
+//
+// All shape-dimension reads go through `dim_value_or_zero()` (defined in
+// shape/dim_expr.hpp). A negative shape dimension is invalid IR, and the
+// helper returns 0 in that case rather than letting `static_cast<u64>`
+// silently wrap it into a huge value.
 #include "cg/analysis/arithmetic_intensity.hpp"
 #include "cg/ir/ops.hpp"
 #include "cg/schedule/schedule.hpp"
+#include "cg/shape/dim_expr.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -32,7 +38,7 @@ BoundClass ArithmeticIntensityAnalysis::classify(u64 flops, u64 bytes,
     // Dynamic roofline ridge from hardware model.
     // ridge = peak_flops / peak_memory_bw
     // For A100 F32: 19.5e12 / 2.0e12 = 9.75 FLOPs/byte
-    // For H100 F16 TC: 989e12 / 3.35e12 ≈ 295 FLOPs/byte
+    // For H100 F16 TC: 989e12 / 3.35e12 ~ 295 FLOPs/byte
     // For CPU F32: 256e9 / 50e9 = 5.12 FLOPs/byte
     double ridge = hw_.roofline_ridge(DType::F32, false);
 
@@ -48,22 +54,20 @@ BoundClass ArithmeticIntensityAnalysis::classify(u64 flops, u64 bytes,
 
 namespace {
 
-// Count elements in a tensor type.
+// Count elements in a tensor type. Returns 0 if any dimension is
+// non-constant or zero.
 u64 numel(const Value& v) {
     if (auto t = v.as_tensor()) {
         u64 n = 1;
         for (auto& d : t->shape) {
             if (!d->is_constant()) return 0;
-            n *= static_cast<u64>(d->value);
+            u64 dv = dim_value_or_zero(d);
+            if (dv == 0) return 0;
+            n *= dv;
         }
         return n;
     }
     return 0;
-}
-
-u64 elem_bytes(const Value& v) {
-    if (auto t = v.as_tensor()) return dtype_size(t->dtype);
-    return 4;
 }
 
 // Compute FLOPs for an operation based on its opcode and operands.
@@ -75,17 +79,16 @@ u64 compute_flops(const Operation& op) {
             auto a = op.operands[0].as_tensor();
             auto b = op.operands[1].as_tensor();
             if (!a || !b || a->shape.rank() < 2 || b->shape.rank() < 2) return 0;
-            u64 M = a->shape[a->shape.rank() - 2]->is_constant()
-                ? a->shape[a->shape.rank() - 2]->value : 0;
-            u64 K = a->shape[a->shape.rank() - 1]->is_constant()
-                ? a->shape[a->shape.rank() - 1]->value : 0;
-            u64 N = b->shape[b->shape.rank() - 1]->is_constant()
-                ? b->shape[b->shape.rank() - 1]->value : 0;
+            u64 M = dim_value_or_zero(a->shape[a->shape.rank() - 2]);
+            u64 K = dim_value_or_zero(a->shape[a->shape.rank() - 1]);
+            u64 N = dim_value_or_zero(b->shape[b->shape.rank() - 1]);
             u64 batch = 1;
             for (usize i = 0; i + 2 < a->shape.rank(); ++i) {
-                batch *= a->shape[i]->is_constant() ? a->shape[i]->value : 0;
+                u64 bv = dim_value_or_zero(a->shape[i]);
+                if (bv == 0) { batch = 0; break; }
+                batch *= bv;
             }
-            return 2 * batch * M * K * N;
+            return u64(2) * batch * M * K * N;
         }
 
         // ---- Conv2D: 2 * N * C_out * H_out * W_out * kH * kW ----
@@ -95,22 +98,22 @@ u64 compute_flops(const Operation& op) {
             auto weight = op.operands[1].as_tensor();
             if (!input || !weight || input->shape.rank() != 4 ||
                 weight->shape.rank() != 4) return 0;
-            u64 N = input->shape[0]->is_constant() ? input->shape[0]->value : 0;
-            u64 C_out = weight->shape[0]->is_constant() ? weight->shape[0]->value : 0;
+            u64 N      = dim_value_or_zero(input->shape[0]);
+            u64 C_out  = dim_value_or_zero(weight->shape[0]);
             u64 H_out = 0, W_out = 0;
-            if (op.results.size() > 0) {
+            if (!op.results.empty()) {
                 auto out = op.results[0].as_tensor();
                 if (out && out->shape.rank() == 4) {
-                    H_out = out->shape[2]->is_constant() ? out->shape[2]->value : 0;
-                    W_out = out->shape[3]->is_constant() ? out->shape[3]->value : 0;
+                    H_out = dim_value_or_zero(out->shape[2]);
+                    W_out = dim_value_or_zero(out->shape[3]);
                 }
             }
-            u64 kH = weight->shape[2]->is_constant() ? weight->shape[2]->value : 0;
-            u64 kW = weight->shape[3]->is_constant() ? weight->shape[3]->value : 0;
+            u64 kH  = dim_value_or_zero(weight->shape[2]);
+            u64 kW  = dim_value_or_zero(weight->shape[3]);
+            u64 C_in = dim_value_or_zero(weight->shape[1]);
             // FLOPs = 2 * N * C_out * H_out * W_out * C_in * kH * kW
             // But C_in * kH * kW is the K dimension
-            u64 C_in = weight->shape[1]->is_constant() ? weight->shape[1]->value : 0;
-            return 2 * N * C_out * H_out * W_out * C_in * kH * kW;
+            return u64(2) * N * C_out * H_out * W_out * C_in * kH * kW;
         }
 
         // ---- Reductions: 1 FLOP per reduced element ----
@@ -119,7 +122,7 @@ u64 compute_flops(const Operation& op) {
         case OP_REDUCE_MEAN: {
             if (op.operands.empty()) return 0;
             u64 in_n = numel(op.operands[0]);
-            u64 out_n = op.results.empty() ? 1 : numel(op.results[0]);
+            u64 out_n = op.results.empty() ? u64(1) : numel(op.results[0]);
             // reduce_mean has an extra division
             if (op.opcode == OP_REDUCE_MEAN) return in_n + out_n;
             return in_n;
@@ -132,7 +135,7 @@ u64 compute_flops(const Operation& op) {
             // Pass 1: max (N comparisons = N FLOPs)
             // Pass 2: exp + sum (2N FLOPs)
             // Pass 3: divide (N FLOPs)
-            return n * 4;
+            return n * u64(4);
         }
 
         // ---- LayerNorm: mean + var + normalize + scale+shift = ~5*N FLOPs ----
@@ -142,14 +145,14 @@ u64 compute_flops(const Operation& op) {
             // Pass 1: sum (N FLOPs)
             // Pass 2: sum of squares (N FLOPs)
             // Pass 3: normalize (3N FLOPs: subtract mean, divide by sqrt(var), multiply gamma)
-            return n * 5;
+            return n * u64(5);
         }
 
         // ---- BatchNorm: similar to LayerNorm ----
         case OP_BATCHNORM: {
             if (op.operands.empty()) return 0;
             u64 n = numel(op.operands[0]);
-            return n * 4;
+            return n * u64(4);
         }
 
         // ---- Elementwise: 1 FLOP per output element ----
@@ -159,13 +162,13 @@ u64 compute_flops(const Operation& op) {
         case OP_LOG: case OP_SQRT: case OP_CAST: {
             if (op.results.empty()) return 0;
             // GELU is more expensive: ~8 FLOPs (tanh approximation)
-            if (op.opcode == OP_GELU) return numel(op.results[0]) * 8;
+            if (op.opcode == OP_GELU) return numel(op.results[0]) * u64(8);
             // EXP, LOG, SQRT are transcendental: ~4 FLOPs each
             if (op.opcode == OP_EXP || op.opcode == OP_LOG ||
-                op.opcode == OP_SQRT) return numel(op.results[0]) * 4;
+                op.opcode == OP_SQRT) return numel(op.results[0]) * u64(4);
             // SIGMOID, TANH: ~3 FLOPs
             if (op.opcode == OP_SIGMOID || op.opcode == OP_TANH)
-                return numel(op.results[0]) * 3;
+                return numel(op.results[0]) * u64(3);
             return numel(op.results[0]);
         }
 
@@ -246,16 +249,18 @@ u64 ArithmeticIntensityAnalysis::matmul_kernel_bytes(u64 M, u64 K, u64 N,
     // reused across the K/k_tile outer steps).
     //
     // Note: this is BEFORE L2 effects. L2 reuse is captured at the
-    // effective-bytes level.
+    // effective-bytes level (matmul_effective_bytes below).
+    //
+    // Only `k_tile` is needed here because the shared-memory reuse factor
+    // is along the reduction axis. `m_tile` and `n_tile` are consumed by
+    // `matmul_effective_bytes` for cross-CTA L2 modeling.
 
-    u32 m_tile = 64, n_tile = 64, k_tile = 32;
+    u32 k_tile = 32;
     bool uses_shared = false;
     for (const auto& t : s.transforms()) {
         switch (t.kind) {
             case TransformKind::Tile:
-                if (t.dim == "m") m_tile = static_cast<u32>(t.factor);
-                else if (t.dim == "n") n_tile = static_cast<u32>(t.factor);
-                else if (t.dim == "k") k_tile = static_cast<u32>(t.factor);
+                if (t.dim == "k") k_tile = static_cast<u32>(t.factor);
                 break;
             case TransformKind::Cache:
                 if (t.mem == MemorySpace::Shared) uses_shared = true;
@@ -287,12 +292,15 @@ u64 ArithmeticIntensityAnalysis::matmul_effective_bytes(u64 M, u64 K, u64 N,
                                                          const HardwareModel& hw) {
     // Effective bytes = bytes that actually miss every cache level.
     //
-    // For matmul:
-    //   A: M*K*elem_size / shared_reuse * (1 - l2_hit_a)
-    //   B: K*N*elem_size / shared_reuse * (1 - l2_hit_b)
-    //   C: M*N*elem_size (always written to global, no reuse)
+    // For a tiled matmul with tiles (m_tile, n_tile, k_tile):
+    //   A (M*K) is read by (M/m_tile) * (N/n_tile) CTAs in total,
+    //     but each A tile (m_tile * K) is reused across (N/n_tile) CTAs
+    //     in the column direction. So the cross-CTA L2 reuse factor for
+    //     A is (N/n_tile), capped by the L2 hit rate when the tile fits.
+    //   B (K*N) is similarly reused across (M/m_tile) CTAs.
+    //   C (M*N) is write-only and gets no L2 reuse benefit.
     //
-    // The accumulator (M_tile * N_tile per CTA) lives in registers and
+    // The accumulator (m_tile * n_tile per CTA) lives in registers and
     // never touches memory, so it contributes ZERO effective bytes.
 
     u32 m_tile = 64, n_tile = 64, k_tile = 32;
@@ -327,16 +335,45 @@ u64 ArithmeticIntensityAnalysis::matmul_effective_bytes(u64 M, u64 K, u64 N,
         b_bytes /= reuse;
     }
 
-    // L2 reuse: B is reused across M/m_tile CTA blocks, A across N/n_tile.
-    // If the tensor fits in L2, hit rate is high.
-    double l2_a = l2_hit_rate(K * N * elem, hw); // wait — A is M*K
-    l2_a = l2_hit_rate(M * K * elem, hw);
+    // L2 reuse — base hit rate from the L2-size-vs-tensor-size model.
+    // A is read M*K bytes; B is read K*N bytes.
+    double l2_a = l2_hit_rate(M * K * elem, hw);
     double l2_b = l2_hit_rate(K * N * elem, hw);
 
-    // Effective bytes after L2 misses.
-    double eff_a = a_bytes * (1.0 - l2_a);
-    double eff_b = b_bytes * (1.0 - l2_b);
-    double eff_c = c_bytes; // C is write-only, no L2 reuse benefit on write
+    // Cross-CTA L2 reuse (only meaningful when tiling is in effect).
+    // Each A tile (m_tile x K) is loaded by (N/n_tile) CTAs in the N
+    // dimension; if those CTAs run close enough in time that the tile
+    // stays in L2, only the first CTA's load goes to DRAM. We model this
+    // as an additive boost to the L2 hit rate, bounded by 0.95 (some
+    // capacity / conflict misses are unavoidable).
+    //
+    // The boost per doubling of reuse is ~0.1 (empirical, derived from
+    // the streaming-with-reuse model in Hong & Kim 2009). The reuse
+    // factor is (N/n_tile) for A and (M/m_tile) for B, both floored at 1.
+    const double reuse_boost_per_doubling = 0.1;
+    const double max_l2_hit               = 0.95;
+    if (n_tile > 0) {
+        u64 a_cta_reuse = std::max<u64>(1, N / n_tile);
+        if (a_cta_reuse > 1) {
+            double boost = std::log2(static_cast<double>(a_cta_reuse))
+                         * reuse_boost_per_doubling;
+            l2_a = std::min(max_l2_hit, l2_a + boost);
+        }
+    }
+    if (m_tile > 0) {
+        u64 b_cta_reuse = std::max<u64>(1, M / m_tile);
+        if (b_cta_reuse > 1) {
+            double boost = std::log2(static_cast<double>(b_cta_reuse))
+                         * reuse_boost_per_doubling;
+            l2_b = std::min(max_l2_hit, l2_b + boost);
+        }
+    }
+
+    // Effective bytes after L2 misses. Cast to double before multiplying
+    // to avoid implicit u64 -> double conversion warnings.
+    double eff_a = static_cast<double>(a_bytes) * (1.0 - l2_a);
+    double eff_b = static_cast<double>(b_bytes) * (1.0 - l2_b);
+    double eff_c = static_cast<double>(c_bytes); // C is write-only, no L2 reuse benefit on write
 
     // Vectorization reduces transaction count (fewer load instructions,
     // better coalescing). We model this as a slight reduction in effective
@@ -372,7 +409,9 @@ void ArithmeticIntensityAnalysis::compute() {
                     u64 n = 1;
                     for (auto& d : t->shape) {
                         if (!d->is_constant()) return 0;
-                        n *= static_cast<u64>(d->value);
+                        u64 dv = dim_value_or_zero(d);
+                        if (dv == 0) return 0;
+                        n *= dv;
                     }
                     return n * dtype_size(t->dtype);
                 }
@@ -401,9 +440,9 @@ void ArithmeticIntensityAnalysis::compute() {
                     a->shape[a->shape.rank() - 2]->is_constant() &&
                     a->shape[a->shape.rank() - 1]->is_constant() &&
                     b->shape[b->shape.rank() - 1]->is_constant()) {
-                    u64 M = a->shape[a->shape.rank() - 2]->value;
-                    u64 K = a->shape[a->shape.rank() - 1]->value;
-                    u64 N = b->shape[b->shape.rank() - 1]->value;
+                    u64 M = dim_value_or_zero(a->shape[a->shape.rank() - 2]);
+                    u64 K = dim_value_or_zero(a->shape[a->shape.rank() - 1]);
+                    u64 N = dim_value_or_zero(b->shape[b->shape.rank() - 1]);
 
                     KernelIntensity ki;
                     ki.flops = oi.flops;

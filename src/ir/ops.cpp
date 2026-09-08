@@ -634,22 +634,27 @@ void OpRegistry::register_builtins() {
             i64 axis = (axis_attr && axis_attr->kind == AttrKind::Integer)
                 ? axis_attr->integer : 0;
             if (axis < 0) axis += static_cast<i64>(first->shape.rank());
+            // After the negative-axis adjustment, `axis` is in
+            // [0, rank). Cast once to usize and use that for all
+            // indexing, so we don't repeat the implicit i64->usize
+            // conversion at every container access.
+            usize axis_u = static_cast<usize>(axis);
 
             // Sum the sizes along the concat axis.
             i64 total = 0;
             for (auto& t : operands) {
                 auto tt = std::dynamic_pointer_cast<const TensorType>(t);
                 if (!tt) continue;
-                if (static_cast<usize>(axis) < tt->shape.rank() &&
-                    tt->shape[axis]->is_constant()) {
-                    total += tt->shape[axis]->value;
+                if (axis_u < tt->shape.rank() &&
+                    tt->shape[axis_u]->is_constant()) {
+                    total += tt->shape[axis_u]->value;
                 }
             }
 
             // Build output shape.
             Shape out = first->shape;
-            if (static_cast<usize>(axis) < out.rank()) {
-                out.dims()[axis] = DimExpr::make_constant(total);
+            if (axis_u < out.rank()) {
+                out.dims()[axis_u] = DimExpr::make_constant(total);
             }
             return { make_tensor_type(out, first->dtype, first->device) };
         };

@@ -33,8 +33,11 @@ u32 count_ops(const Module& m, Opcode opcode) {
     return n;
 }
 
-// Helper: total op count.
-u32 total_ops(const Module& m) {
+// Helper: total op count. Kept as a named helper (rather than inline)
+// for readability in test assertions; may be unused if no test in this
+// file currently queries the total op count, but is part of the
+// standard test scaffolding.
+[[maybe_unused]] u32 total_ops(const Module& m) {
     return static_cast<u32>(m.num_operations());
 }
 

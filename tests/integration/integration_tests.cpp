@@ -96,9 +96,9 @@ TEST(Integration, RuntimeCreation) {
 TEST(Integration, EGraphSuperoptimize) {
     // Build: add(x, 0) -> x
     EGraph g;
-    auto x = g.add({"var", {}, DType::F32, {}});
-    auto zero = g.add({"const", {}, DType::F32, {}});
-    auto sum = g.add({"add", {x, zero}});
+    auto x = g.add(ENode{.op = "var", .children = {}, .dtype = DType::F32, .shape = {}});
+    auto zero = g.add(ENode{.op = "const", .children = {}, .dtype = DType::F32, .shape = {}});
+    auto sum = g.add(ENode{.op = "add", .children = {x, zero}, .dtype = {}, .shape = {}});
 
     EGraph::Rewrite rw;
     rw.lhs = Pattern::node("add", {Pattern::var("a"), Pattern::var("b")});
